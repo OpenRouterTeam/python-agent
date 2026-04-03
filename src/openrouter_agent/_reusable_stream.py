@@ -32,14 +32,13 @@ class ReusableAsyncStream(Generic[T]):
         try:
             async for item in self._source:
                 self._buffer.append(item)
-                # Signal waiting consumers
-                self._event = anyio.Event()
+                # Signal waiting consumers, then create a fresh event for the next cycle
                 self._event.set()
+                self._event = anyio.Event()
         except BaseException as e:
             self._error = e
         finally:
             self._done = True
-            self._event = anyio.Event()
             self._event.set()
 
     async def start(self, task_group: TaskGroup) -> None:
@@ -80,5 +79,4 @@ class _Consumer(Generic[T]):
                     raise self._stream._error
                 raise StopAsyncIteration
 
-            # Wait for new data
-            await anyio.sleep(0.001)
+            await self._stream._event.wait()
