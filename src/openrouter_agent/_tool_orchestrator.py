@@ -116,6 +116,14 @@ def _extract_usage_from_response(response: dict[str, Any]) -> Usage | None:
     return None
 
 
+def _extract_provider_metadata(response: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract experimental provider metadata, checking both naming conventions."""
+    return response.get(
+        "experimental_provider_metadata",
+        response.get("experimental_providerMetadata"),
+    )
+
+
 def _build_api_request(
     resolved_params: dict[str, Any],
     tools: list[Tool],
@@ -210,6 +218,7 @@ async def run_tool_loop(
                 response=response,
                 usage=usage,
                 finish_reason=response.get("finish_reason", "stop"),
+                experimental_provider_metadata=_extract_provider_metadata(response),
             )
             steps.append(step)
             break
@@ -264,6 +273,7 @@ async def run_tool_loop(
             response=response,
             usage=usage,
             finish_reason=response.get("finish_reason"),
+            experimental_provider_metadata=_extract_provider_metadata(response),
         )
         steps.append(step)
 

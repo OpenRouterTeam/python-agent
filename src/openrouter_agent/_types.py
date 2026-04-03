@@ -242,6 +242,7 @@ class StepResult(BaseModel):
     usage: Usage | None = None
     finish_reason: str | None = None
     warnings: list[Warning] | None = None
+    experimental_provider_metadata: dict[str, Any] | None = None
 
     model_config = {"extra": "allow"}
 

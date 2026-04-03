@@ -6,6 +6,7 @@ from openrouter_agent import (
     ConversationStatus,
     ManualTool,
     ManualToolFunction,
+    StepResult,
     ToolFunctionWithExecute,
     ToolType,
     ToolWithExecute,
@@ -96,3 +97,14 @@ def test_turn_event_guards():
     # Dict form
     assert is_turn_start_event({"type": "turn.start"})
     assert is_turn_end_event({"type": "turn.end"})
+
+
+def test_step_result_experimental_provider_metadata_defaults_to_none():
+    step = StepResult(step_type="initial")
+    assert step.experimental_provider_metadata is None
+
+
+def test_step_result_experimental_provider_metadata_accepts_value():
+    meta = {"openai": {"reasoning_tokens": 42}}
+    step = StepResult(step_type="initial", experimental_provider_metadata=meta)
+    assert step.experimental_provider_metadata == meta
