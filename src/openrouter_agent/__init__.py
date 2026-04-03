@@ -1,78 +1,87 @@
 """OpenRouter Agent SDK for Python."""
 
-# Result type
 # Format compatibility
 from ._anthropic_compat import from_claude_messages, to_claude_message
 
-# Async params
-from ._async_params import has_async_functions, resolve_async_functions
+# Async params (internal, kept for submodule use)
+from ._async_params import has_async_functions as has_async_functions  # noqa: F401
+from ._async_params import resolve_async_functions as resolve_async_functions  # noqa: F401
 
 # Core loop
 from ._call_model import call_model
 from ._chat_compat import from_chat_messages, to_chat_message
 
-# Conversation state
+# Conversation state (internal, kept for submodule use)
+from ._conversation_state import append_to_messages as append_to_messages  # noqa: F401
+from ._conversation_state import create_initial_state as create_initial_state  # noqa: F401
+from ._conversation_state import create_rejected_result as create_rejected_result  # noqa: F401
+from ._conversation_state import create_unsent_result as create_unsent_result  # noqa: F401
+from ._conversation_state import generate_conversation_id as generate_conversation_id  # noqa: F401
+from ._conversation_state import partition_tool_calls as partition_tool_calls  # noqa: F401
+from ._conversation_state import tool_requires_approval as tool_requires_approval  # noqa: F401
 from ._conversation_state import (
-    append_to_messages,
-    create_initial_state,
-    create_rejected_result,
-    create_unsent_result,
-    generate_conversation_id,
-    partition_tool_calls,
-    tool_requires_approval,
-    unsent_results_to_api_format,
-    update_state,
+    unsent_results_to_api_format as unsent_results_to_api_format,  # noqa: F401
 )
+from ._conversation_state import update_state as update_state  # noqa: F401
 from ._model_result import ModelResult
 
-# Next turn params
+# Next turn params (internal, kept for submodule use)
 from ._next_turn_params import (
-    apply_next_turn_params_to_request,
-    build_next_turn_params_context,
-    execute_next_turn_params_functions,
+    apply_next_turn_params_to_request as apply_next_turn_params_to_request,  # noqa: F401
+)
+from ._next_turn_params import (
+    build_next_turn_params_context as build_next_turn_params_context,  # noqa: F401
+)
+from ._next_turn_params import (
+    execute_next_turn_params_functions as execute_next_turn_params_functions,  # noqa: F401
 )
 from ._result import Err, Ok, Result
 
-# Streaming
-from ._reusable_stream import ReusableAsyncStream
+# Streaming (internal, kept for submodule use)
+from ._reusable_stream import ReusableAsyncStream as ReusableAsyncStream  # noqa: F401
 
 # Stop conditions
 from ._stop_conditions import (
     finish_reason_is,
     has_tool_call,
-    is_stop_condition_met,
     max_cost,
     max_tokens_used,
     step_count_is,
 )
+from ._stop_conditions import is_stop_condition_met as is_stop_condition_met  # noqa: F401
+from ._stream_transformers import extract_reasoning_deltas as extract_reasoning_deltas  # noqa: F401
+from ._stream_transformers import extract_text_deltas as extract_text_deltas  # noqa: F401
 from ._stream_transformers import (
-    extract_reasoning_deltas,
-    extract_text_deltas,
-    extract_tool_stream_events,
-    extract_unsupported_content,
-    get_unsupported_content_summary,
-    has_unsupported_content,
+    extract_tool_stream_events as extract_tool_stream_events,  # noqa: F401
 )
-
-# Tool context
-from ._tool_context import ToolContextStore, build_tool_execute_context, resolve_context
-from ._tool_event_broadcaster import ToolEventBroadcaster
-
-# Tool executor
-from ._tool_executor import (
-    execute_generator_tool,
-    execute_regular_tool,
-    execute_tool,
-    find_tool_by_name,
-    parse_tool_call_arguments,
-    tool_to_api_format,
+from ._stream_transformers import (
+    extract_unsupported_content as extract_unsupported_content,  # noqa: F401
 )
+from ._stream_transformers import (
+    get_unsupported_content_summary as get_unsupported_content_summary,  # noqa: F401
+)
+from ._stream_transformers import has_unsupported_content as has_unsupported_content  # noqa: F401
+
+# Tool context (internal, kept for submodule use)
+from ._tool_context import ToolContextStore as ToolContextStore  # noqa: F401
+from ._tool_context import build_tool_execute_context as build_tool_execute_context  # noqa: F401
+from ._tool_context import resolve_context as resolve_context  # noqa: F401
+from ._tool_event_broadcaster import ToolEventBroadcaster as ToolEventBroadcaster  # noqa: F401
+
+# Tool executor (internal, kept for submodule use)
+from ._tool_executor import execute_generator_tool as execute_generator_tool  # noqa: F401
+from ._tool_executor import execute_regular_tool as execute_regular_tool  # noqa: F401
+from ._tool_executor import execute_tool as execute_tool  # noqa: F401
+from ._tool_executor import find_tool_by_name as find_tool_by_name  # noqa: F401
+from ._tool_executor import parse_tool_call_arguments as parse_tool_call_arguments  # noqa: F401
+from ._tool_executor import tool_to_api_format as tool_to_api_format  # noqa: F401
 
 # Tool factory
 from ._tool_factory import tool
 
-# Turn context
-from ._turn_context import build_turn_context, normalize_input_to_array
+# Turn context (internal, kept for submodule use)
+from ._turn_context import build_turn_context as build_turn_context  # noqa: F401
+from ._turn_context import normalize_input_to_array as normalize_input_to_array  # noqa: F401
 
 # Core types
 from ._types import (
@@ -80,14 +89,13 @@ from ._types import (
     NON_CLAUDE_MESSAGE_ROLE,
     SHARED_CONTEXT_KEY,
     APITool,
-    BaseToolFunction,
     ChatStreamEvent,
     ConversationState,
     ConversationStatus,
     FunctionCallItem,
     ManualTool,
-    ManualToolFunction,
     NextTurnParamsContext,
+    OpenRouterClient,
     ParsedToolCall,
     PartialResponse,
     ResponseStreamEvent,
@@ -98,8 +106,6 @@ from ._types import (
     ToolCallOutputEvent,
     ToolExecuteContext,
     ToolExecutionResult,
-    ToolFunctionWithExecute,
-    ToolFunctionWithGenerator,
     ToolPreliminaryResultEvent,
     ToolResultEvent,
     ToolStreamEvent,
@@ -127,11 +133,24 @@ from ._types import (
     tool_has_approval_configured,
 )
 
+# Internal types re-exported for backward compat (not in __all__)
+from ._types import BaseToolFunction as BaseToolFunction  # noqa: F401
+from ._types import ManualToolFunction as ManualToolFunction  # noqa: F401
+from ._types import ToolFunctionWithExecute as ToolFunctionWithExecute  # noqa: F401
+from ._types import ToolFunctionWithGenerator as ToolFunctionWithGenerator  # noqa: F401
+
 __all__ = [
     # Result
     "Ok",
     "Err",
     "Result",
+    # Core loop
+    "call_model",
+    "ModelResult",
+    # Tool factory
+    "tool",
+    # Client protocol
+    "OpenRouterClient",
     # Enums
     "ToolType",
     "ConversationStatus",
@@ -140,17 +159,13 @@ __all__ = [
     "CLAUDE_CONTENT_BLOCK_TYPE",
     "NON_CLAUDE_MESSAGE_ROLE",
     # Core types
-    "FunctionCallItem",
-    "TurnContext",
-    "ToolExecuteContext",
-    "BaseToolFunction",
-    "ToolFunctionWithExecute",
-    "ToolFunctionWithGenerator",
-    "ManualToolFunction",
+    "Tool",
     "ToolWithExecute",
     "ToolWithGenerator",
     "ManualTool",
-    "Tool",
+    "FunctionCallItem",
+    "TurnContext",
+    "ToolExecuteContext",
     "ParsedToolCall",
     "ToolExecutionResult",
     "Warning",
@@ -185,58 +200,12 @@ __all__ = [
     "is_claude_style_messages",
     "tool_has_approval_configured",
     "has_approval_required_tools",
-    # Tool factory
-    "tool",
-    # Tool context
-    "ToolContextStore",
-    "build_tool_execute_context",
-    "resolve_context",
-    # Tool executor
-    "tool_to_api_format",
-    "parse_tool_call_arguments",
-    "execute_regular_tool",
-    "execute_generator_tool",
-    "execute_tool",
-    "find_tool_by_name",
-    # Streaming
-    "ReusableAsyncStream",
-    "ToolEventBroadcaster",
-    "extract_text_deltas",
-    "extract_reasoning_deltas",
-    "extract_tool_stream_events",
-    "extract_unsupported_content",
-    "has_unsupported_content",
-    "get_unsupported_content_summary",
-    # Core loop
-    "call_model",
-    "ModelResult",
-    # Async params
-    "resolve_async_functions",
-    "has_async_functions",
     # Stop conditions
     "step_count_is",
     "has_tool_call",
     "max_tokens_used",
     "max_cost",
     "finish_reason_is",
-    "is_stop_condition_met",
-    # Turn context
-    "build_turn_context",
-    "normalize_input_to_array",
-    # Next turn params
-    "build_next_turn_params_context",
-    "execute_next_turn_params_functions",
-    "apply_next_turn_params_to_request",
-    # Conversation state
-    "generate_conversation_id",
-    "create_initial_state",
-    "update_state",
-    "append_to_messages",
-    "tool_requires_approval",
-    "partition_tool_calls",
-    "create_unsent_result",
-    "create_rejected_result",
-    "unsent_results_to_api_format",
     # Format compatibility
     "from_claude_messages",
     "to_claude_message",

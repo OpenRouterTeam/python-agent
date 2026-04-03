@@ -10,6 +10,7 @@ from ._tool_context import ToolContextStore, resolve_context
 from ._tool_event_broadcaster import ToolEventBroadcaster
 from ._tool_orchestrator import DEFAULT_MAX_STEPS, run_tool_loop
 from ._types import (
+    OpenRouterClient,
     ResponseStreamEvent,
     StopCondition,
     Tool,
@@ -17,7 +18,7 @@ from ._types import (
 
 
 async def call_model(
-    client: Any,
+    client: OpenRouterClient,
     request: dict[str, Any],
     options: dict[str, Any] | None = None,
 ) -> ModelResult:

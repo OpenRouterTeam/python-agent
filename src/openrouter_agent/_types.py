@@ -50,6 +50,18 @@ NON_CLAUDE_MESSAGE_ROLE = {
 
 
 # ---------------------------------------------------------------------------
+# Client protocol
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class OpenRouterClient(Protocol):
+    """Protocol defining the required client interface."""
+
+    @property
+    def beta(self) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
 # Generic type vars
 # ---------------------------------------------------------------------------
 

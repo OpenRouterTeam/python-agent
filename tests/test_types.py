@@ -6,6 +6,7 @@ from openrouter_agent import (
     ConversationStatus,
     ManualTool,
     ManualToolFunction,
+    OpenRouterClient,
     ToolFunctionWithExecute,
     ToolType,
     ToolWithExecute,
@@ -96,3 +97,18 @@ def test_turn_event_guards():
     # Dict form
     assert is_turn_start_event({"type": "turn.start"})
     assert is_turn_end_event({"type": "turn.end"})
+
+
+def test_openrouter_client_protocol():
+    """OpenRouterClient is runtime-checkable and matches objects with a beta attr."""
+
+    class FakeClient:
+        @property
+        def beta(self):
+            return object()
+
+    class NotAClient:
+        pass
+
+    assert isinstance(FakeClient(), OpenRouterClient)
+    assert not isinstance(NotAClient(), OpenRouterClient)

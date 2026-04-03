@@ -18,6 +18,7 @@ from ._tool_executor import execute_tool, tool_to_api_format
 from ._turn_context import build_turn_context
 from ._types import (
     FunctionCallItem,
+    OpenRouterClient,
     ParsedToolCall,
     ResponseStreamEvent,
     StepResult,
@@ -145,7 +146,7 @@ def _tool_results_to_input_items(results: list[ToolExecutionResult]) -> list[dic
 
 
 async def run_tool_loop(
-    client: Any,
+    client: OpenRouterClient,
     request_params: dict[str, Any],
     tools: list[Tool],
     stop_conditions: list[StopCondition],
@@ -295,7 +296,7 @@ async def run_tool_loop(
     return steps
 
 
-async def _call_api(client: Any, request: dict[str, Any]) -> dict[str, Any]:
+async def _call_api(client: OpenRouterClient, request: dict[str, Any]) -> dict[str, Any]:
     """Call the OpenRouter API via the client."""
     try:
         response = await client.beta.responses.send_async(
