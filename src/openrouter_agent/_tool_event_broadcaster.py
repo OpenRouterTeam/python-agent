@@ -21,17 +21,21 @@ class ToolEventBroadcaster(Generic[T]):
         self._buffer: list[T] = []
         self._done = False
         self._error: BaseException | None = None
+        self._event = anyio.Event()
 
     def push(self, event: T) -> None:
         """Push an event to all consumers."""
         if self._done:
             raise RuntimeError("Cannot push to completed broadcaster")
         self._buffer.append(event)
+        self._event.set()
+        self._event = anyio.Event()
 
     def complete(self, error: BaseException | None = None) -> None:
         """Mark the broadcaster as complete."""
         self._done = True
         self._error = error
+        self._event.set()
 
     def create_consumer(self) -> AsyncIterator[T]:
         """Create a new independent consumer."""
@@ -64,4 +68,4 @@ class _BroadcastConsumer(Generic[T]):
                     raise self._broadcaster._error
                 raise StopAsyncIteration
 
-            await anyio.sleep(0.001)
+            await self._broadcaster._event.wait()
