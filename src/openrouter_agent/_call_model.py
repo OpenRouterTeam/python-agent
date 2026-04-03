@@ -91,6 +91,7 @@ async def call_model(
         on_turn_start=on_turn_start,
         on_turn_end=on_turn_end,
         require_approval=require_approval,
+        options=options,
     )
 
     return ModelResult(

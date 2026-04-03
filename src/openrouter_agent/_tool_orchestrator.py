@@ -155,6 +155,7 @@ async def run_tool_loop(
     on_turn_start: Any | None = None,
     on_turn_end: Any | None = None,
     require_approval: Any | None = None,
+    options: dict[str, Any] | None = None,
 ) -> list[StepResult]:
     """Run the multi-step tool execution loop."""
     steps: list[StepResult] = []
@@ -184,7 +185,7 @@ async def run_tool_loop(
         if on_turn_start:
             await on_turn_start(turn_context)
 
-        response = await _call_api(client, api_request)
+        response = await _call_api(client, api_request, options)
         broadcaster.push(response)
 
         broadcaster.push(TurnEndEvent(
@@ -295,13 +296,21 @@ async def run_tool_loop(
     return steps
 
 
-async def _call_api(client: Any, request: dict[str, Any]) -> dict[str, Any]:
+async def _call_api(
+    client: Any,
+    request: dict[str, Any],
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Call the OpenRouter API via the client."""
     try:
-        response = await client.beta.responses.send_async(
-            stream=False,
-            **request,
-        )
+        kwargs: dict[str, Any] = {"stream": False, **request}
+        if options:
+            if "headers" in options:
+                kwargs["extra_headers"] = options["headers"]
+            for key in ("timeout", "extra_body", "extra_query"):
+                if key in options:
+                    kwargs[key] = options[key]
+        response = await client.beta.responses.send_async(**kwargs)
         if hasattr(response, "model_dump"):
             return response.model_dump()
         if hasattr(response, "to_dict"):
