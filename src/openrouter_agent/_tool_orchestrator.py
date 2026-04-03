@@ -6,6 +6,8 @@ import json
 import time
 from typing import Any
 
+import anyio
+
 from ._async_params import CLIENT_ONLY_FIELDS, resolve_async_functions
 from ._next_turn_params import (
     apply_next_turn_params_to_request,
@@ -214,16 +216,17 @@ async def run_tool_loop(
             steps.append(step)
             break
 
-        tool_results: list[ToolExecutionResult] = []
-        for tc in tool_calls:
+        tool_results: list[ToolExecutionResult | None] = [None] * len(tool_calls)
+
+        async def _run_tool(index: int, tc: ParsedToolCall) -> None:
             t = tool_index.get(tc.name)
             if t is None:
-                tool_results.append(ToolExecutionResult(
+                tool_results[index] = ToolExecutionResult(
                     tool_call_id=tc.id,
                     tool_name=tc.name,
                     error=f"Tool '{tc.name}' not found",
-                ))
-                continue
+                )
+                return
 
             tool_turn_context = build_turn_context(
                 number_of_turns=step_num,
@@ -236,8 +239,19 @@ async def run_tool_loop(
             result = await execute_tool(
                 t, tc, tool_turn_context, context_store, _on_preliminary
             )
-            tool_results.append(result)
+            tool_results[index] = result
 
+        async with anyio.create_task_group() as tg:
+            for i, tc in enumerate(tool_calls):
+                tg.start_soon(_run_tool, i, tc)
+
+        # All slots are guaranteed filled after the task group completes.
+        completed_results: list[ToolExecutionResult] = [
+            r for r in tool_results if r is not None
+        ]
+
+        # Broadcast events in original order after all tools complete
+        for result in completed_results:
             broadcaster.push(ToolResultEvent(
                 type="tool.result",
                 tool_call_id=result.tool_call_id,
@@ -260,7 +274,7 @@ async def run_tool_loop(
             step_type=step_type,
             text=text,
             tool_calls=tool_calls,
-            tool_results=tool_results,
+            tool_results=completed_results,
             response=response,
             usage=usage,
             finish_reason=response.get("finish_reason"),
@@ -274,7 +288,7 @@ async def run_tool_loop(
             tool_calls, tools, current_request
         )
 
-        tool_result_items = _tool_results_to_input_items(tool_results)
+        tool_result_items = _tool_results_to_input_items(completed_results)
         current_input = current_request.get("input", [])
         if isinstance(current_input, str):
             current_input = [{"role": "user", "content": current_input}]
