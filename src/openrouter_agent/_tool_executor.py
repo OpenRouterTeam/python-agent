@@ -133,25 +133,33 @@ async def execute_generator_tool(
     preliminary_results: list[Any] = []
     final_result: Any = None
 
+    def _emit_event(value: Any) -> None:
+        event_data = _to_result_dict(value)
+        preliminary_results.append(event_data)
+        if on_preliminary_result:
+            on_preliminary_result(tool_call.id, event_data, time.time())
+
     try:
         gen = t.function.execute(parsed, context)
         async for value in gen:
-            # Try to validate as output (final result)
-            try:
-                val_dict = _to_result_dict(value)
-                t.function.output_schema.model_validate(
-                    val_dict if isinstance(val_dict, dict) else val_dict
-                )
+            if isinstance(value, t.function.output_schema):
                 final_result = value
-                continue
-            except ValidationError:
-                pass
-
-            # It's a preliminary result (event)
-            event_data = _to_result_dict(value)
-            preliminary_results.append(event_data)
-            if on_preliminary_result:
-                on_preliminary_result(tool_call.id, event_data, time.time())
+            elif isinstance(value, t.function.event_schema):
+                _emit_event(value)
+            else:
+                # Fallback: try output validation for untyped values (e.g. dicts)
+                try:
+                    val_dict = _to_result_dict(value)
+                    t.function.output_schema.model_validate(
+                        val_dict if isinstance(val_dict, dict) else val_dict
+                    )
+                    final_result = value
+                    logger.warning(
+                        "Generator yielded ambiguous value for tool '%s' -- treated as output",
+                        t.function.name,
+                    )
+                except ValidationError:
+                    _emit_event(value)
 
         return ToolExecutionResult(
             tool_call_id=tool_call.id,
