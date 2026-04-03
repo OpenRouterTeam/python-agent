@@ -48,6 +48,7 @@ async def call_model(
     require_approval = request.get("require_approval")
     on_turn_start = request.get("on_turn_start")
     on_turn_end = request.get("on_turn_end")
+    stream: bool = request.get("stream", True)
 
     # Normalize stop conditions
     stop_conditions: list[StopCondition] = []
@@ -91,6 +92,7 @@ async def call_model(
         on_turn_start=on_turn_start,
         on_turn_end=on_turn_end,
         require_approval=require_approval,
+        stream=stream,
     )
 
     return ModelResult(

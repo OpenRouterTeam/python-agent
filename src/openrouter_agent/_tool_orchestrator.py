@@ -155,6 +155,7 @@ async def run_tool_loop(
     on_turn_start: Any | None = None,
     on_turn_end: Any | None = None,
     require_approval: Any | None = None,
+    stream: bool = True,
 ) -> list[StepResult]:
     """Run the multi-step tool execution loop."""
     steps: list[StepResult] = []
@@ -184,8 +185,12 @@ async def run_tool_loop(
         if on_turn_start:
             await on_turn_start(turn_context)
 
-        response = await _call_api(client, api_request)
-        broadcaster.push(response)
+        response = await _call_api(
+            client, api_request, stream=stream, broadcaster=broadcaster
+        )
+        if not stream:
+            # In non-streaming mode the full response was not pushed yet.
+            broadcaster.push(response)
 
         broadcaster.push(TurnEndEvent(
             type="turn.end",
@@ -295,19 +300,146 @@ async def run_tool_loop(
     return steps
 
 
-async def _call_api(client: Any, request: dict[str, Any]) -> dict[str, Any]:
-    """Call the OpenRouter API via the client."""
+async def _call_api(
+    client: Any,
+    request: dict[str, Any],
+    *,
+    stream: bool = True,
+    broadcaster: ToolEventBroadcaster[ResponseStreamEvent] | None = None,
+) -> dict[str, Any]:
+    """Call the OpenRouter API via the client.
+
+    When *stream* is ``True`` (the default), the response is consumed as SSE
+    events.  Each event is pushed to *broadcaster* so downstream consumers
+    receive real-time deltas.  The final accumulated response dict is returned.
+
+    When *stream* is ``False``, the API is called in non-streaming mode and the
+    response dict is returned directly (legacy behaviour).
+    """
     try:
-        response = await client.beta.responses.send_async(
-            stream=False,
+        if not stream:
+            response = await client.beta.responses.send_async(
+                stream=False,
+                **request,
+            )
+            return _response_to_dict(response)
+
+        # --- streaming path ---
+        sse_stream = await client.beta.responses.send_async(
+            stream=True,
             **request,
         )
-        if hasattr(response, "model_dump"):
-            return response.model_dump()
-        if hasattr(response, "to_dict"):
-            return response.to_dict()
-        if isinstance(response, dict):
-            return response
-        return {"output": [], "id": getattr(response, "id", "")}
+        return await _accumulate_stream(sse_stream, broadcaster)
     except Exception as e:
         raise RuntimeError(f"API call failed: {e}") from e
+
+
+def _response_to_dict(response: Any) -> dict[str, Any]:
+    """Normalize a non-streaming response into a plain dict."""
+    if hasattr(response, "model_dump"):
+        result: dict[str, Any] = response.model_dump()
+        return result
+    if hasattr(response, "to_dict"):
+        result2: dict[str, Any] = response.to_dict()
+        return result2
+    if isinstance(response, dict):
+        return response
+    return {"output": [], "id": getattr(response, "id", "")}
+
+
+async def _accumulate_stream(
+    sse_stream: Any,
+    broadcaster: ToolEventBroadcaster[ResponseStreamEvent] | None,
+) -> dict[str, Any]:
+    """Iterate over SSE events, push each to *broadcaster*, and accumulate
+    the final response dict that ``run_tool_loop`` expects.
+    """
+    accumulated: dict[str, Any] = {"output": [], "id": ""}
+    output_items: dict[int, dict[str, Any]] = {}  # index -> partial item
+
+    async for event in sse_stream:
+        # Normalise event to a dict
+        if hasattr(event, "model_dump"):
+            event_dict: dict[str, Any] = event.model_dump()
+        elif hasattr(event, "to_dict"):
+            event_dict = event.to_dict()
+        elif isinstance(event, dict):
+            event_dict = event
+        else:
+            event_dict = {"type": getattr(event, "type", "unknown")}
+
+        # Broadcast every SSE event to consumers
+        if broadcaster is not None:
+            broadcaster.push(event_dict)
+
+        event_type = event_dict.get("type", "")
+
+        # Accumulate response-level metadata
+        if event_type == "response.created":
+            response_data = event_dict.get("response", {})
+            if isinstance(response_data, dict):
+                accumulated["id"] = response_data.get("id", accumulated["id"])
+
+        elif event_type == "response.completed":
+            response_data = event_dict.get("response", {})
+            if isinstance(response_data, dict):
+                # The completed event carries the full response; prefer it.
+                return response_data
+
+        # Accumulate output items
+        elif event_type == "response.output_item.added":
+            idx = event_dict.get("output_index", len(output_items))
+            item = event_dict.get("item", {})
+            if isinstance(item, dict):
+                output_items[idx] = dict(item)
+
+        elif event_type == "response.output_item.done":
+            idx = event_dict.get("output_index", -1)
+            item = event_dict.get("item", {})
+            if isinstance(item, dict) and idx >= 0:
+                output_items[idx] = dict(item)
+
+        # Accumulate text deltas
+        elif event_type == "response.output_text.delta":
+            idx = event_dict.get("output_index", 0)
+            _ensure_text_item(output_items, idx)
+            delta = event_dict.get("delta", "")
+            _append_text_delta(output_items[idx], delta)
+
+        # Accumulate function-call argument deltas
+        elif event_type == "response.function_call_arguments.delta":
+            idx = event_dict.get("output_index", 0)
+            item = output_items.setdefault(idx, {"type": "function_call", "arguments": ""})
+            item["arguments"] = item.get("arguments", "") + event_dict.get("delta", "")
+
+        # Usage
+        elif event_type == "response.usage":
+            accumulated["usage"] = event_dict.get("usage", {})
+
+    # Fallback: assemble from accumulated items
+    accumulated["output"] = [output_items[k] for k in sorted(output_items)]
+    return accumulated
+
+
+def _ensure_text_item(items: dict[int, dict[str, Any]], idx: int) -> None:
+    """Make sure *items[idx]* is a text-bearing output item."""
+    if idx not in items:
+        items[idx] = {
+            "type": "message",
+            "content": [{"type": "output_text", "text": ""}],
+        }
+
+
+def _append_text_delta(item: dict[str, Any], delta: str) -> None:
+    """Append *delta* to the text content of *item*."""
+    content = item.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "output_text":
+                block["text"] = block.get("text", "") + delta
+                return
+        item["content"].append({"type": "output_text", "text": delta})
+    elif isinstance(content, str):
+        item["content"] = content + delta
+    else:
+        item["content"] = [{"type": "output_text", "text": delta}]

@@ -19,6 +19,7 @@ CLIENT_ONLY_FIELDS = frozenset({
     "shared_context_schema",
     "on_turn_start",
     "on_turn_end",
+    "stream",
 })
 
 
