@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from ._model_result import ModelResult
 from ._stop_conditions import step_count_is
@@ -10,6 +10,8 @@ from ._tool_context import ToolContextStore, resolve_context
 from ._tool_event_broadcaster import ToolEventBroadcaster
 from ._tool_orchestrator import DEFAULT_MAX_STEPS, run_tool_loop
 from ._types import (
+    CallModelInput,
+    RequestOptions,
     ResponseStreamEvent,
     StopCondition,
     Tool,
@@ -18,8 +20,8 @@ from ._types import (
 
 async def call_model(
     client: Any,
-    request: dict[str, Any],
-    options: dict[str, Any] | None = None,
+    request: CallModelInput | dict[str, Any],
+    options: RequestOptions | dict[str, Any] | None = None,
 ) -> ModelResult:
     """Call a model with optional tools, stop conditions, and state management.
 
@@ -83,7 +85,7 @@ async def call_model(
     # Run the tool loop
     steps = await run_tool_loop(
         client=client,
-        request_params=request,
+        request_params=cast(dict[str, Any], request),
         tools=tools,
         stop_conditions=stop_conditions,
         context_store=context_store,

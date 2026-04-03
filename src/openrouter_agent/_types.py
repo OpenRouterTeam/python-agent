@@ -13,6 +13,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -381,6 +382,48 @@ class APITool(BaseModel):
     description: str | None = None
     strict: bool | None = None
     parameters: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Typed request / options dicts
+# ---------------------------------------------------------------------------
+
+
+class RequestOptions(TypedDict, total=False):
+    """Options passed alongside the model request (headers, timeout, etc.)."""
+
+    headers: dict[str, str]
+    timeout: float | None
+
+
+class CallModelInput(TypedDict, total=False):
+    """Typed dict describing the *request* parameter accepted by ``call_model``.
+
+    All keys are optional (``total=False``) so callers only need to specify
+    the fields they care about.  The type remains backward-compatible with
+    ``dict[str, Any]`` — any extra keys are silently forwarded to the API.
+    """
+
+    # Standard API fields
+    model: str
+    input: list[dict[str, Any]] | str
+    instructions: str
+    temperature: float
+    max_output_tokens: int
+    top_p: float
+    top_k: int
+    previous_response_id: str
+
+    # SDK-specific fields
+    tools: list[Tool]
+    stop_when: StopWhen
+    context: Any
+    state: StateAccessor
+    require_approval: Any
+    on_turn_start: Any
+    on_turn_end: Any
+    approve_tool_calls: list[str]
+    reject_tool_calls: list[str]
 
 
 # ---------------------------------------------------------------------------
