@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrouter-agent-sdk"
+version = "0.1.0"
+description = "OpenRouter Agent SDK for Python - typed tool definitions, multi-consumer streaming, and conversation state management"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "openrouter>=0.8.0",
+    "pydantic>=2.0",
+    "anyio>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "anyio[trio]>=4.0",
+    "pytest-anyio",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrouter_agent"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["openrouter_agent"]
+mypy_path = "src"
