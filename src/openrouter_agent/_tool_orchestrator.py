@@ -17,6 +17,7 @@ from ._tool_event_broadcaster import ToolEventBroadcaster
 from ._tool_executor import execute_tool, tool_to_api_format
 from ._turn_context import build_turn_context
 from ._types import (
+    APIError,
     FunctionCallItem,
     ParsedToolCall,
     ResponseStreamEvent,
@@ -310,4 +311,4 @@ async def _call_api(client: Any, request: dict[str, Any]) -> dict[str, Any]:
             return response
         return {"output": [], "id": getattr(response, "id", "")}
     except Exception as e:
-        raise RuntimeError(f"API call failed: {e}") from e
+        raise APIError(f"API call failed: {e}") from e

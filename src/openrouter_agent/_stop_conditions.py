@@ -35,17 +35,28 @@ def max_tokens_used(max_tokens: int) -> StopCondition:
     return check
 
 
-def max_cost(max_cost_dollars: float) -> StopCondition:
-    """Stop when estimated cost exceeds a threshold."""
+def max_cost(
+    max_cost_dollars: float,
+    cost_per_token: float | None = None,
+) -> StopCondition:
+    """Stop when estimated cost exceeds a threshold.
+
+    Args:
+        max_cost_dollars: Maximum cost in USD before stopping.
+        cost_per_token: Cost per token in USD. If not provided, defaults to
+            ``0.00001`` ($0.01 per 1K tokens) which is a *rough* estimate.
+            For accurate cost control, pass the actual per-token price for
+            your model (e.g. ``0.000003`` for GPT-4o input tokens).
+    """
+
     def check(steps: list[StepResult]) -> bool:
-        # Cost estimation based on token usage
-        # This is approximate; actual pricing depends on model
         total_tokens = sum(
             (step.usage.total_tokens if step.usage else 0) for step in steps
         )
-        # Use a rough estimate of $0.01 per 1K tokens as a fallback
-        estimated_cost = total_tokens * 0.00001
+        rate = cost_per_token if cost_per_token is not None else 0.00001
+        estimated_cost = total_tokens * rate
         return estimated_cost >= max_cost_dollars
+
     return check
 
 

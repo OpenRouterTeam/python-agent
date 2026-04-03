@@ -443,13 +443,17 @@ def is_claude_style_messages(input_data: Any) -> bool:
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") in (
-                        "text",
-                        "image",
                         "tool_use",
                         "tool_result",
                     ):
                         return True
     return False
+
+
+class APIError(Exception):
+    """Error from the OpenRouter API call."""
+
+    pass
 
 
 def tool_has_approval_configured(t: Tool) -> bool:

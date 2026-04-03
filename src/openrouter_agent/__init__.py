@@ -79,6 +79,7 @@ from ._types import (
     CLAUDE_CONTENT_BLOCK_TYPE,
     NON_CLAUDE_MESSAGE_ROLE,
     SHARED_CONTEXT_KEY,
+    APIError,
     APITool,
     BaseToolFunction,
     ChatStreamEvent,
@@ -132,6 +133,8 @@ __all__ = [
     "Ok",
     "Err",
     "Result",
+    # Errors
+    "APIError",
     # Enums
     "ToolType",
     "ConversationStatus",

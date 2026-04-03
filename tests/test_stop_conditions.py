@@ -9,6 +9,7 @@ from openrouter_agent import (
     finish_reason_is,
     has_tool_call,
     is_stop_condition_met,
+    max_cost,
     max_tokens_used,
     step_count_is,
 )
@@ -69,3 +70,29 @@ async def test_is_stop_condition_met_none_met():
     steps = [_make_step()]
     conditions = [step_count_is(5), has_tool_call("search")]
     assert not await is_stop_condition_met(conditions, steps)
+
+
+def test_max_cost_default_rate():
+    """max_cost with default rate uses $0.01/1K tokens."""
+    cond = max_cost(0.01)
+    # 1000 tokens * 0.00001 = $0.01 -> should trigger
+    assert cond([_make_step(total_tokens=1000)])
+    # 999 tokens * 0.00001 = $0.00999 -> should NOT trigger
+    assert not cond([_make_step(total_tokens=999)])
+
+
+def test_max_cost_custom_rate():
+    """max_cost with explicit cost_per_token overrides the default."""
+    # Use a much higher rate: $0.001/token
+    cond = max_cost(1.0, cost_per_token=0.001)
+    # 1000 tokens * 0.001 = $1.00 -> should trigger
+    assert cond([_make_step(total_tokens=1000)])
+    # 500 tokens * 0.001 = $0.50 -> should NOT trigger
+    assert not cond([_make_step(total_tokens=500)])
+
+
+def test_max_cost_accumulates_across_steps():
+    """max_cost sums tokens across all steps."""
+    cond = max_cost(0.01, cost_per_token=0.00001)
+    steps = [_make_step(total_tokens=400), _make_step(total_tokens=600)]
+    assert cond(steps)  # 1000 * 0.00001 = 0.01

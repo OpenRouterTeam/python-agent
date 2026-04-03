@@ -3,6 +3,7 @@
 from pydantic import BaseModel
 
 from openrouter_agent import (
+    APIError,
     ConversationStatus,
     ManualTool,
     ManualToolFunction,
@@ -13,6 +14,7 @@ from openrouter_agent import (
     TurnEndEvent,
     TurnStartEvent,
     has_execute_function,
+    is_claude_style_messages,
     is_generator_tool,
     is_manual_tool,
     is_regular_execute_tool,
@@ -96,3 +98,73 @@ def test_turn_event_guards():
     # Dict form
     assert is_turn_start_event({"type": "turn.start"})
     assert is_turn_end_event({"type": "turn.end"})
+
+
+# ---------------------------------------------------------------------------
+# is_claude_style_messages – should NOT false-positive on OpenAI format
+# ---------------------------------------------------------------------------
+
+def test_is_claude_style_messages_with_tool_use():
+    """Claude-exclusive 'tool_use' blocks are detected."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_1", "name": "search", "input": {}}],
+        }
+    ]
+    assert is_claude_style_messages(messages) is True
+
+
+def test_is_claude_style_messages_with_tool_result():
+    """Claude-exclusive 'tool_result' blocks are detected."""
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"}],
+        }
+    ]
+    assert is_claude_style_messages(messages) is True
+
+
+def test_is_claude_style_messages_text_blocks_not_false_positive():
+    """'text' content blocks exist in both formats – must NOT trigger."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "Hello"}]}
+    ]
+    assert is_claude_style_messages(messages) is False
+
+
+def test_is_claude_style_messages_image_blocks_not_false_positive():
+    """'image' content blocks exist in both formats – must NOT trigger."""
+    messages = [
+        {"role": "user", "content": [{"type": "image", "source": {"url": "http://example.com/img.png"}}]}
+    ]
+    assert is_claude_style_messages(messages) is False
+
+
+def test_is_claude_style_messages_plain_string():
+    """Plain string content is never Claude-style."""
+    messages = [{"role": "user", "content": "Hello"}]
+    assert is_claude_style_messages(messages) is False
+
+
+def test_is_claude_style_messages_non_list():
+    """Non-list input returns False."""
+    assert is_claude_style_messages("just a string") is False
+
+
+# ---------------------------------------------------------------------------
+# APIError
+# ---------------------------------------------------------------------------
+
+def test_api_error_is_exception():
+    assert issubclass(APIError, Exception)
+
+
+def test_api_error_preserves_cause():
+    original = ValueError("connection reset")
+    try:
+        raise APIError("API call failed: connection reset") from original
+    except APIError as exc:
+        assert exc.__cause__ is original
+        assert "connection reset" in str(exc)
