@@ -3,9 +3,16 @@
 from pydantic import BaseModel
 
 from openrouter_agent import (
+    ChatAssistantMessage,
     ConversationStatus,
+    InferToolContext,
+    InferToolEvent,
+    InferToolInput,
+    InferToolOutput,
     ManualTool,
     ManualToolFunction,
+    OpenResponsesResult,
+    StreamableOutputItem,
     ToolFunctionWithExecute,
     ToolType,
     ToolWithExecute,
@@ -96,3 +103,67 @@ def test_turn_event_guards():
     # Dict form
     assert is_turn_start_event({"type": "turn.start"})
     assert is_turn_end_event({"type": "turn.end"})
+
+
+# --- Concrete TypedDict types ---
+
+
+def test_chat_assistant_message():
+    msg: ChatAssistantMessage = {"role": "assistant", "content": "Hello"}
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "Hello"
+
+
+def test_chat_assistant_message_with_tool_calls():
+    msg: ChatAssistantMessage = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+        ],
+    }
+    assert msg["tool_calls"] is not None
+    assert len(msg["tool_calls"]) == 1
+
+
+def test_streamable_output_item():
+    item: StreamableOutputItem = {"type": "text", "text": "hello"}
+    assert item["type"] == "text"
+    assert item["text"] == "hello"
+
+
+def test_streamable_output_item_tool_call():
+    item: StreamableOutputItem = {
+        "type": "function_call", "id": "c1", "name": "search", "arguments": "{}",
+    }
+    assert item["type"] == "function_call"
+    assert item["name"] == "search"
+
+
+def test_open_responses_result():
+    result: OpenResponsesResult = {
+        "id": "resp_123",
+        "output": [{"type": "message", "content": []}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        "finish_reason": "stop",
+        "model": "gpt-4",
+    }
+    assert result["id"] == "resp_123"
+    assert result["finish_reason"] == "stop"
+
+
+def test_open_responses_result_minimal():
+    result: OpenResponsesResult = {"id": "resp_456"}
+    assert result["id"] == "resp_456"
+
+
+# --- Type inference aliases ---
+
+
+def test_infer_type_vars_exist():
+    """Verify that the type inference aliases are importable TypeVars."""
+    # These are TypeVars -- they exist as documentation stubs
+    assert InferToolInput is not None
+    assert InferToolOutput is not None
+    assert InferToolContext is not None
+    assert InferToolEvent is not None

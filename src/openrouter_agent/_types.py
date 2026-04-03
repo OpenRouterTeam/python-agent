@@ -8,6 +8,7 @@ from typing import (
     Any,
     Generic,
     Protocol,
+    TypedDict,
     TypeVar,
     runtime_checkable,
 )
@@ -458,3 +459,50 @@ def tool_has_approval_configured(t: Tool) -> bool:
 
 def has_approval_required_tools(tools: list[Tool]) -> bool:
     return any(tool_has_approval_configured(t) for t in tools)
+
+
+# ---------------------------------------------------------------------------
+# Concrete TypedDict types (wire-level shapes)
+# ---------------------------------------------------------------------------
+
+
+class ChatAssistantMessage(TypedDict, total=False):
+    """An assistant message in chat-completion format."""
+
+    role: str  # Required: "assistant"
+    content: str | None
+    tool_calls: list[dict[str, Any]] | None
+
+
+class StreamableOutputItem(TypedDict, total=False):
+    """A single output item from a streaming response."""
+
+    type: str  # Required
+    id: str
+    name: str
+    arguments: str
+    text: str
+    content: list[dict[str, Any]]
+
+
+class OpenResponsesResult(TypedDict, total=False):
+    """Top-level result from an Open Responses call."""
+
+    id: str  # Required
+    output: list[dict[str, Any]]
+    usage: dict[str, Any]
+    finish_reason: str
+    model: str
+    experimental_provider_metadata: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Type inference aliases (documentation stubs)
+# ---------------------------------------------------------------------------
+# Python cannot infer these at compile time the way TypeScript can, but they
+# provide IDE hints and serve as documentation anchors.
+
+InferToolInput = TypeVar("InferToolInput")
+InferToolOutput = TypeVar("InferToolOutput")
+InferToolContext = TypeVar("InferToolContext")
+InferToolEvent = TypeVar("InferToolEvent")
