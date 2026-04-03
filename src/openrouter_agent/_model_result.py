@@ -41,7 +41,7 @@ class ModelResult:
     # Text consumption
     # -----------------------------------------------------------------------
 
-    def get_text(self) -> str:
+    async def get_text(self) -> str:
         """Get the full text response (concatenated across all steps)."""
         return "".join(step.text for step in self._steps)
 
@@ -65,7 +65,7 @@ class ModelResult:
     # Full response
     # -----------------------------------------------------------------------
 
-    def get_response(self) -> dict[str, Any]:
+    async def get_response(self) -> dict[str, Any]:
         """Get the final API response."""
         if self._steps:
             return self._steps[-1].response
@@ -122,7 +122,7 @@ class ModelResult:
     # Tool consumption
     # -----------------------------------------------------------------------
 
-    def get_tool_calls(self) -> list[ParsedToolCall]:
+    async def get_tool_calls(self) -> list[ParsedToolCall]:
         """Get all tool calls across all steps."""
         calls: list[ParsedToolCall] = []
         for step in self._steps:
@@ -145,13 +145,13 @@ class ModelResult:
     # State management
     # -----------------------------------------------------------------------
 
-    def get_pending_tool_calls(self) -> list[ParsedToolCall]:
+    async def get_pending_tool_calls(self) -> list[ParsedToolCall]:
         """Get tool calls that are pending approval."""
         if self._state and self._state.pending_tool_calls:
             return list(self._state.pending_tool_calls)
         return []
 
-    def get_state(self) -> ConversationState | None:
+    async def get_state(self) -> ConversationState | None:
         """Get the current conversation state."""
         return self._state
 
