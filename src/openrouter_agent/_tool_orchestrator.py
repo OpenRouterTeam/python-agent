@@ -7,6 +7,10 @@ import time
 from typing import Any
 
 from ._async_params import CLIENT_ONLY_FIELDS, resolve_async_functions
+from ._conversation_state import (
+    partition_tool_calls,
+    update_state,
+)
 from ._next_turn_params import (
     apply_next_turn_params_to_request,
     execute_next_turn_params_functions,
@@ -17,6 +21,8 @@ from ._tool_event_broadcaster import ToolEventBroadcaster
 from ._tool_executor import execute_tool, tool_to_api_format
 from ._turn_context import build_turn_context
 from ._types import (
+    ConversationState,
+    ConversationStatus,
     FunctionCallItem,
     ParsedToolCall,
     ResponseStreamEvent,
@@ -155,11 +161,20 @@ async def run_tool_loop(
     on_turn_start: Any | None = None,
     on_turn_end: Any | None = None,
     require_approval: Any | None = None,
-) -> list[StepResult]:
-    """Run the multi-step tool execution loop."""
+    state: ConversationState | None = None,
+) -> tuple[list[StepResult], ConversationState | None]:
+    """Run the multi-step tool execution loop.
+
+    Returns:
+        A tuple of (steps, final_state).  ``final_state`` is ``None`` when no
+        state tracking was requested (i.e. *state* was ``None`` on entry).
+    """
     steps: list[StepResult] = []
     current_request = dict(request_params)
     tool_index = _build_tool_index(tools)
+
+    # Initialise state tracking when a state object is provided.
+    current_state = state
 
     def _on_preliminary(call_id: str, data: Any, ts: float) -> None:
         broadcaster.push(ToolPreliminaryResultEvent(
@@ -201,6 +216,12 @@ async def run_tool_loop(
         usage = _extract_usage_from_response(response)
         step_type = "initial" if step_num == 0 else "continue"
 
+        # Track response id in state
+        if current_state is not None:
+            current_state = update_state(current_state, {
+                "previous_response_id": response.get("id"),
+            })
+
         if not tool_calls:
             step = StepResult(
                 step_type=step_type,
@@ -212,10 +233,43 @@ async def run_tool_loop(
                 finish_reason=response.get("finish_reason", "stop"),
             )
             steps.append(step)
+            if current_state is not None:
+                current_state = update_state(current_state, {
+                    "status": ConversationStatus.COMPLETE,
+                })
             break
 
+        # ----- Approval partitioning -----
+        if require_approval is not None:
+            needs_approval, auto_execute = await partition_tool_calls(
+                tool_calls, tools, turn_context, require_approval,
+            )
+        else:
+            needs_approval = []
+            auto_execute = list(tool_calls)
+
+        # If any tool calls need approval, pause the loop.
+        if needs_approval:
+            step = StepResult(
+                step_type=step_type,
+                text=text,
+                tool_calls=tool_calls,
+                tool_results=[],
+                response=response,
+                usage=usage,
+                finish_reason="awaiting_approval",
+            )
+            steps.append(step)
+            if current_state is not None:
+                current_state = update_state(current_state, {
+                    "status": ConversationStatus.AWAITING_APPROVAL,
+                    "pending_tool_calls": needs_approval,
+                })
+            break
+
+        # ----- Execute auto-approved tool calls -----
         tool_results: list[ToolExecutionResult] = []
-        for tc in tool_calls:
+        for tc in auto_execute:
             t = tool_index.get(tc.name)
             if t is None:
                 tool_results.append(ToolExecutionResult(
@@ -291,8 +345,16 @@ async def run_tool_loop(
             current_request, next_params
         )
 
+    # Update state messages with the final input history
+    if current_state is not None:
+        final_input = current_request.get("input", [])
+        if isinstance(final_input, list):
+            current_state = update_state(current_state, {
+                "messages": final_input,
+            })
+
     broadcaster.complete()
-    return steps
+    return steps, current_state
 
 
 async def _call_api(client: Any, request: dict[str, Any]) -> dict[str, Any]:

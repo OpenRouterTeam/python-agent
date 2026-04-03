@@ -91,6 +91,7 @@ from ._types import (
     ParsedToolCall,
     PartialResponse,
     ResponseStreamEvent,
+    StateAccessor,
     StepResult,
     StopCondition,
     StopWhen,
@@ -163,6 +164,7 @@ __all__ = [
     "UnsentToolResult",
     "PartialResponse",
     "ConversationState",
+    "StateAccessor",
     # Event types
     "ToolPreliminaryResultEvent",
     "ToolResultEvent",
