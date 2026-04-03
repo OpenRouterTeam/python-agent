@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 
+import anyio
+
 from ._types import StepResult, StopCondition
 
 
@@ -62,11 +64,27 @@ async def is_stop_condition_met(
     stop_conditions: list[StopCondition],
     steps: list[StepResult],
 ) -> bool:
-    """Evaluate all stop conditions (OR logic). Returns True if any are met."""
-    for condition in stop_conditions:
-        result = condition(steps)
-        if inspect.isawaitable(result):
-            result = await result
-        if result:
-            return True
-    return False
+    """Evaluate all stop conditions in parallel (OR logic).
+
+    Returns True if any condition is met. Cancels remaining checks
+    as soon as one condition returns True.
+    """
+    if not stop_conditions:
+        return False
+
+    result = False
+
+    async def _check(condition: StopCondition) -> None:
+        nonlocal result
+        r = condition(steps)
+        if inspect.isawaitable(r):
+            r = await r
+        if r:
+            result = True
+            tg.cancel_scope.cancel()
+
+    async with anyio.create_task_group() as tg:
+        for condition in stop_conditions:
+            tg.start_soon(_check, condition)
+
+    return result

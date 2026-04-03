@@ -1,5 +1,6 @@
 """Tests for stop conditions."""
 
+import anyio
 import pytest
 
 from openrouter_agent import (
@@ -69,3 +70,22 @@ async def test_is_stop_condition_met_none_met():
     steps = [_make_step()]
     conditions = [step_count_is(5), has_tool_call("search")]
     assert not await is_stop_condition_met(conditions, steps)
+
+
+@pytest.mark.anyio
+async def test_is_stop_condition_met_empty_list():
+    steps = [_make_step()]
+    assert not await is_stop_condition_met([], steps)
+
+
+@pytest.mark.anyio
+async def test_is_stop_condition_met_async_and_sync_parallel():
+    """Async and sync conditions are evaluated concurrently."""
+
+    async def async_condition(steps: list[StepResult]) -> bool:
+        await anyio.sleep(0.05)
+        return True
+
+    steps = [_make_step()]
+    conditions = [step_count_is(100), async_condition]
+    assert await is_stop_condition_met(conditions, steps)
