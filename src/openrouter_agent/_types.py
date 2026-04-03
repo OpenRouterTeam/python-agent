@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import enum
-from collections.abc import AsyncGenerator, Awaitable, Callable
+import types as builtin_types
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import (
     Any,
     Generic,
@@ -106,8 +107,8 @@ class ToolExecuteContext(Generic[TContext, TShared]):
         self.number_of_turns = number_of_turns
         self.turn_request = turn_request
         self.tool_name = tool_name
-        self.local: dict[str, Any] = local or {}
-        self.shared: dict[str, Any] = shared or {}
+        self.local: Mapping[str, Any] = builtin_types.MappingProxyType(local or {})
+        self.shared: Mapping[str, Any] = builtin_types.MappingProxyType(shared or {})
         self._set_context_fn = set_context_fn
         self._set_shared_context_fn = set_shared_context_fn
 

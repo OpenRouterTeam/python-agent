@@ -1,5 +1,7 @@
 """Tests for ToolContextStore and context building."""
 
+import pytest
+
 from openrouter_agent import (
     SHARED_CONTEXT_KEY,
     ToolContextStore,
@@ -61,3 +63,49 @@ def test_build_tool_execute_context_set_context():
     ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
     ctx.set_context({"val": 2, "new": 3})
     assert store.get_tool_context("my_tool") == {"val": 2, "new": 3}
+
+
+def test_local_is_readonly():
+    """Directly mutating ctx.local should raise TypeError."""
+    store = ToolContextStore({"my_tool": {"key": "original"}})
+    turn_ctx = TurnContext()
+    ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
+
+    with pytest.raises(TypeError):
+        ctx.local["key"] = "val"  # type: ignore[index]
+
+
+def test_shared_is_readonly():
+    """Directly mutating ctx.shared should raise TypeError."""
+    store = ToolContextStore({SHARED_CONTEXT_KEY: {"key": "original"}})
+    turn_ctx = TurnContext()
+    ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
+
+    with pytest.raises(TypeError):
+        ctx.shared["key"] = "val"  # type: ignore[index]
+
+
+def test_set_context_still_works():
+    """set_context() should update the store even though local is readonly."""
+    store = ToolContextStore({"my_tool": {"key": "original"}})
+    turn_ctx = TurnContext()
+    ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
+    ctx.set_context({"key": "val"})
+    assert store.get_tool_context("my_tool") == {"key": "val"}
+
+
+def test_set_shared_context_still_works():
+    """set_shared_context() should update the store even though shared is readonly."""
+    store = ToolContextStore({SHARED_CONTEXT_KEY: {"key": "original"}})
+    turn_ctx = TurnContext()
+    ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
+    ctx.set_shared_context({"key": "val"})
+    assert store.get_tool_context(SHARED_CONTEXT_KEY) == {"key": "val"}
+
+
+def test_reading_local_works():
+    """Reading values from ctx.local should work normally."""
+    store = ToolContextStore({"my_tool": {"key": "value"}})
+    turn_ctx = TurnContext()
+    ctx = build_tool_execute_context(turn_ctx, store, "my_tool")
+    assert ctx.local["key"] == "value"
