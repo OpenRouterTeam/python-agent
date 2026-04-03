@@ -88,3 +88,41 @@ async def test_execute_regular_tool_validation_error():
     result = await execute_regular_tool(t, tc, ctx, store)
     assert result.error is not None
     assert "validation error" in result.error.lower() or "Input validation" in result.error
+
+
+@pytest.mark.anyio
+async def test_execute_regular_tool_output_validation_warning():
+    """Output validation failures should be surfaced as warnings."""
+
+    t = tool(
+        name="bad_output",
+        description="Returns wrong type",
+        input_schema=MathInput,
+        output_schema=MathOutput,
+        execute=lambda params, ctx: {"result": "not_a_number"},
+    )
+    assert isinstance(t, ToolWithExecute)
+    tc = ParsedToolCall(id="call_2", name="bad_output", arguments={"a": 1, "b": 2})
+    ctx = TurnContext(number_of_turns=0)
+    store = ToolContextStore()
+    result = await execute_regular_tool(t, tc, ctx, store)
+    # Should still return a result (non-fatal)
+    assert result.error is None
+    assert result.result == {"result": "not_a_number"}
+    # But warnings should be populated
+    assert result.warnings is not None
+    assert len(result.warnings) == 1
+    assert "Output validation failed" in result.warnings[0]
+
+
+@pytest.mark.anyio
+async def test_execute_regular_tool_no_warnings_on_valid_output():
+    """No warnings when output passes validation."""
+    t = _make_add_tool()
+    tc = ParsedToolCall(id="call_3", name="add", arguments={"a": 1, "b": 2})
+    ctx = TurnContext(number_of_turns=0)
+    store = ToolContextStore()
+    result = await execute_regular_tool(t, tc, ctx, store)
+    assert result.error is None
+    assert result.result == {"result": 3}
+    assert result.warnings is None

@@ -81,6 +81,59 @@ def test_to_claude_message_text():
     assert msg["content"][0]["text"] == "Hello there"
 
 
+def test_from_claude_developer_role():
+    messages = [{"role": "developer", "content": "You are a helpful assistant."}]
+    result = from_claude_messages(messages)
+    assert len(result) == 1
+    assert result[0]["role"] == "developer"
+    assert result[0]["content"] == "You are a helpful assistant."
+
+
+def test_from_claude_developer_role_non_string_content():
+    messages = [{"role": "developer", "content": ["block1", "block2"]}]
+    result = from_claude_messages(messages)
+    assert len(result) == 1
+    assert result[0]["role"] == "developer"
+    assert result[0]["content"] == "['block1', 'block2']"
+
+
+def test_from_claude_tool_role():
+    messages = [
+        {
+            "role": "tool",
+            "tool_use_id": "tu_42",
+            "content": "tool output text",
+        }
+    ]
+    result = from_claude_messages(messages)
+    assert len(result) == 1
+    assert result[0]["type"] == "function_call_output"
+    assert result[0]["call_id"] == "tu_42"
+    assert result[0]["output"] == "tool output text"
+
+
+def test_from_claude_tool_role_dict_content():
+    messages = [
+        {
+            "role": "tool",
+            "tool_use_id": "tu_99",
+            "content": {"key": "value"},
+        }
+    ]
+    result = from_claude_messages(messages)
+    assert len(result) == 1
+    assert result[0]["type"] == "function_call_output"
+    assert result[0]["call_id"] == "tu_99"
+    assert result[0]["output"] == '{"key": "value"}'
+
+
+def test_from_claude_tool_role_missing_tool_use_id():
+    messages = [{"role": "tool", "content": "output"}]
+    result = from_claude_messages(messages)
+    assert len(result) == 1
+    assert result[0]["call_id"] == ""
+
+
 def test_to_claude_message_tool_call():
     response = {
         "output": [

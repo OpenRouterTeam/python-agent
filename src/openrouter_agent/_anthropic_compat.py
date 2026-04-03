@@ -85,6 +85,19 @@ def from_claude_messages(
                 "content": content if isinstance(content, str) else str(content),
             })
 
+        elif role == "developer":
+            items.append({
+                "role": "developer",
+                "content": content if isinstance(content, str) else str(content),
+            })
+
+        elif role == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": msg.get("tool_use_id", ""),
+                "output": _serialize_content(content),
+            })
+
     return items
 
 

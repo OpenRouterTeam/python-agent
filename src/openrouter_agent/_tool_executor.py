@@ -96,18 +96,22 @@ async def execute_regular_tool(
         if inspect.isawaitable(result):
             result = await result
 
+        warnings: list[str] = []
         if t.function.output_schema is not None:
             try:
                 t.function.output_schema.model_validate(
                     result if isinstance(result, dict) else result
                 )
             except ValidationError as e:
-                logger.warning("Output validation failed for tool '%s': %s", t.function.name, e)
+                msg = f"Output validation failed for tool '{t.function.name}': {e}"
+                logger.warning(msg)
+                warnings.append(msg)
 
         return ToolExecutionResult(
             tool_call_id=tool_call.id,
             tool_name=tool_call.name,
             result=_to_result_dict(result),
+            warnings=warnings if warnings else None,
         )
     except Exception as e:
         return ToolExecutionResult(

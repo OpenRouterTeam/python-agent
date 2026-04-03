@@ -212,6 +212,7 @@ class ToolExecutionResult(BaseModel):
     result: Any = None
     preliminary_results: list[Any] | None = None
     error: str | None = None
+    warnings: list[str] | None = None
 
 
 class Warning(BaseModel):
