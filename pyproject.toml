@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrouter-agent"
+version = "0.7.2"
+description = "Python port of @openrouter/agent: OpenRouter tool orchestration, streaming, state, and format compatibility."
+readme = "README.md"
+requires-python = ">=3.9.2"
+license = "Apache-2.0"
+authors = [{ name = "OpenRouter" }]
+keywords = ["openrouter", "agent", "python", "tools", "streaming", "llm"]
+dependencies = [
+  "openrouter>=0.10.2",
+  "pydantic>=2.11.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10,<2.0",
+  "pytest>=8.4,<9.0",
+  "pytest-asyncio>=0.23,<1.0",
+  "ruff>=0.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrouter_agent"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "B009", "B010", "B023", "B904", "E501", "I001", "UP006", "UP007", "UP035", "UP037", "UP045"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.9"
+check_untyped_defs = true
+warn_unused_ignores = false
+allow_redefinition = true
+explicit_package_bases = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["anyio.*"]
+follow_imports = "skip"
