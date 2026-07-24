@@ -1,0 +1,54 @@
+name: CI
+
+# This repo had no CI. Without it the port verifier's pytest/ruff/mypy calls only
+# ever ran inside the sync job, so a generated PR reached review with no
+# independent signal. This runs the same checks on every PR and push.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      # Deterministic tests only. tests/e2e needs OPENROUTER_API_KEY and skips
+      # cleanly without it.
+      - name: Tests
+        run: uv run pytest tests/unit -q
+
+  # Runs the port's own mechanical gate on PRs that touch the port machinery, so
+  # a broken verifier or contract is caught here rather than mid-sync.
+  verify-port:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/port-toolchain
+      - name: Port verifier
+        run: ./.upstreamer/scripts/verify.sh

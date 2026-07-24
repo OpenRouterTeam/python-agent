@@ -4,6 +4,9 @@
 
 This package builds on the official `openrouter` Python SDK. It does not reimplement HTTP, auth, retries, or model schemas; `call_model` sends requests through `client.beta.responses.send_async`, the same Responses API surface used by the TypeScript package.
 
+> **This package is a port.** `@openrouter/agent` (TypeScript) is the reference
+> spec; this repo is kept in sync automatically. See [PORTING.md](PORTING.md).
+
 ## Install
 
 ```bash
