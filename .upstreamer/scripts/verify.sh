@@ -77,7 +77,9 @@ if [ -f "$upstream_pkg" ]; then
     fail "version drift: pyproject.toml=$declared, upstream @openrouter/agent=$target"
   fi
 else
-  echo "  SKIP: no upstream checkout to compare version against"
+  # Only present during a sync run. Standalone/CI invocations legitimately have no
+  # upstream checkout; not a failure, but say so rather than passing silently.
+  echo "  SKIP: no upstream checkout — version parity unchecked (declared $declared)"
 fi
 echo
 
