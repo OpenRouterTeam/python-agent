@@ -9,3 +9,12 @@ build/
 *.egg-info/
 .env
 .env.*
+
+# Upstreamer port machinery
+# Upstream checkout + scratch work
+tmp/upstreamer/
+# Run logs
+.upstreamer/logs/
+# LOCAL SECRETS - never commit
+.upstreamer/port.env
+!.upstreamer/port.env.example

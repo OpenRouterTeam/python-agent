@@ -1,0 +1,10 @@
+# Last upstream commit successfully ported AND verified AND eval-passed.
+# 680bceb ported the 0.7.2 -> 0.8.0 delta: the lifecycle hooks system
+# (HooksManager, PreToolUse/PostToolUse/PostToolUseFailure/UserPromptSubmit/
+# Stop/PermissionRequest/SessionStart/SessionEnd/PostModelCall), versioned
+# ConversationState serialization, awaiting_client_tools for unresolved
+# manual tool calls, default-on allow_final_response with
+# DEFAULT_FINAL_RESPONSE_DIRECTIVE, strict_final_response / empty-final-retry
+# tolerance, and MCP tool-result source discrimination.
+# Only scripts/upstream runs should change this.
+upstream_commit: 680bceb4598f228d3e2ec58e2416e4335cdff059

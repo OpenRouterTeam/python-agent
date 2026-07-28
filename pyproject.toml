@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openrouter-agent"
-version = "0.7.2"
+version = "0.8.0"
 description = "Python port of @openrouter/agent: OpenRouter tool orchestration, streaming, state, and format compatibility."
 readme = "README.md"
 requires-python = ">=3.9.2"

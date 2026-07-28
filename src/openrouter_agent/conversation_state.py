@@ -1,13 +1,51 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import time
 import uuid
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from ._utils import json_dumps, maybe_await
-from .tool_types import ConversationState, ParsedToolCall, Tool, UnsentToolResult, get_tool_function, is_client_tool
+from .tool_types import (
+    ConversationState,
+    ParsedToolCall,
+    PartialResponse,
+    Tool,
+    UnsentToolResult,
+    get_tool_function,
+    is_client_tool,
+)
 from .turn_context import normalize_input_to_array
+
+#: Currently supported ConversationState serialization version.
+CONVERSATION_STATE_VERSION = 1
+
+
+class UnsupportedStateVersionError(Exception):
+    """Raised by `deserialize_conversation_state` when a state blob's
+    `version` is not supported by this SDK build."""
+
+    def __init__(self, found: int, supported: Sequence[int] = (CONVERSATION_STATE_VERSION,)) -> None:
+        supported_list = list(supported)
+        super().__init__(
+            f"Unsupported ConversationState version {found}; supported version(s): "
+            f"{', '.join(str(v) for v in supported_list)}"
+        )
+        self.name = "UnsupportedStateVersionError"
+        self.found = found
+        self.supported = supported_list
+
+
+class InvalidStateError(Exception):
+    """Raised by `deserialize_conversation_state` when given JSON that is not
+    a well-formed ConversationState (missing/wrong required fields, or
+    invalid JSON)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.name = "InvalidStateError"
 
 
 def _now_ms() -> int:
@@ -21,15 +59,127 @@ def generate_conversation_id() -> str:
 def create_initial_state(id: Optional[str] = None) -> ConversationState:
     now = _now_ms()
     return ConversationState(
-        id=id or generate_conversation_id(), messages=[], status="in_progress", created_at=now, updated_at=now
+        id=id or generate_conversation_id(),
+        messages=[],
+        status="in_progress",
+        created_at=now,
+        updated_at=now,
+        version=CONVERSATION_STATE_VERSION,
     )
 
 
 def update_state(state: ConversationState, updates: Mapping[str, Any]) -> ConversationState:
     normalized: Dict[str, Any] = {}
     for key, value in updates.items():
+        if key in ("id", "created_at", "version"):
+            continue
         normalized[key] = value
     return replace(state, **normalized, updated_at=_now_ms())
+
+
+def _describe_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        return "array"
+    return type(value).__name__
+
+
+def serialize_conversation_state(state: ConversationState) -> str:
+    """Serialize a `ConversationState` to a stable JSON string for durable
+    storage.
+
+    Guarantees the `version` field is present (injects `CONVERSATION_STATE_VERSION`
+    when the input state lacks it). Treat the returned JSON as **opaque**:
+    consumers should round-trip via these helpers rather than introspecting
+    item shapes.
+
+    Note: the StateAccessor load/save contract is unchanged -- these helpers
+    are opt-in for callers that need a durable, versioned wire format.
+    """
+    payload = dataclasses.asdict(state)
+    payload["version"] = state.version if state.version is not None else CONVERSATION_STATE_VERSION
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def deserialize_conversation_state(raw_json: str) -> ConversationState:
+    """Parse and validate a previously serialized `ConversationState`.
+
+    Accepts version-less legacy blobs and states with `version: 1`,
+    normalizing both to `version: 1`. Raises `UnsupportedStateVersionError`
+    for any other version. Raises `InvalidStateError` for malformed JSON or
+    missing required fields (`id`, `messages`, `status`, `created_at`,
+    `updated_at`).
+    """
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as error:
+        raise InvalidStateError(f"Invalid ConversationState JSON: {error}") from error
+
+    if not isinstance(parsed, dict):
+        raise InvalidStateError("ConversationState must be a JSON object")
+
+    # Version check runs before structural validation: a future-version blob
+    # may have a different shape, and it must fail with
+    # UnsupportedStateVersionError rather than a misleading InvalidStateError.
+    version = parsed.get("version")
+    if version is not None and version != CONVERSATION_STATE_VERSION:
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise InvalidStateError(
+                f'ConversationState field "version" must be a number when present (got {_describe_type(version)})'
+            )
+        raise UnsupportedStateVersionError(version, [CONVERSATION_STATE_VERSION])
+
+    if not isinstance(parsed.get("id"), str):
+        raise InvalidStateError(
+            f'ConversationState missing or invalid field "id" (expected string, got {_describe_type(parsed.get("id"))})'
+        )
+    if not isinstance(parsed.get("messages"), list):
+        raise InvalidStateError(
+            'ConversationState missing or invalid field "messages" '
+            f"(expected array, got {_describe_type(parsed.get('messages'))})"
+        )
+    if not isinstance(parsed.get("status"), str):
+        raise InvalidStateError(
+            f'ConversationState missing or invalid field "status" '
+            f"(expected string, got {_describe_type(parsed.get('status'))})"
+        )
+    if not isinstance(parsed.get("created_at"), (int, float)) or isinstance(parsed.get("created_at"), bool):
+        raise InvalidStateError(
+            'ConversationState missing or invalid field "created_at" '
+            f"(expected number, got {_describe_type(parsed.get('created_at'))})"
+        )
+    if not isinstance(parsed.get("updated_at"), (int, float)) or isinstance(parsed.get("updated_at"), bool):
+        raise InvalidStateError(
+            'ConversationState missing or invalid field "updated_at" '
+            f"(expected number, got {_describe_type(parsed.get('updated_at'))})"
+        )
+
+    pending_tool_calls = None
+    if parsed.get("pending_tool_calls") is not None:
+        pending_tool_calls = [ParsedToolCall(**item) for item in parsed["pending_tool_calls"]]
+
+    unsent_tool_results = None
+    if parsed.get("unsent_tool_results") is not None:
+        unsent_tool_results = [UnsentToolResult(**item) for item in parsed["unsent_tool_results"]]
+
+    partial_response = None
+    if parsed.get("partial_response") is not None:
+        partial_response = PartialResponse(**parsed["partial_response"])
+
+    return ConversationState(
+        id=parsed["id"],
+        messages=parsed["messages"],
+        status=parsed["status"],
+        created_at=parsed["created_at"],
+        updated_at=parsed["updated_at"],
+        previous_response_id=parsed.get("previous_response_id"),
+        pending_tool_calls=pending_tool_calls,
+        unsent_tool_results=unsent_tool_results,
+        partial_response=partial_response,
+        interrupted_by=parsed.get("interrupted_by"),
+        version=CONVERSATION_STATE_VERSION,
+    )
 
 
 def append_to_messages(current: Any, new_items: Sequence[Any]) -> List[Any]:

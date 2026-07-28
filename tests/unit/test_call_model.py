@@ -96,7 +96,10 @@ async def test_allow_final_response_executes_pending_tool_before_no_tools_turn()
 
     assert await result.get_text() == "4"
     assert len(client.beta.responses.requests) == 2
-    assert "tools" not in client.beta.responses.requests[1]
+    # Tools stay in the request (prompt-cache prefix preserved); calling is
+    # forbidden via tool_choice instead of stripping the tools block.
+    assert "tools" in client.beta.responses.requests[1]
+    assert client.beta.responses.requests[1]["tool_choice"] == "none"
     second_input = client.beta.responses.requests[1]["input"]
     types = [item.get("type") for item in second_input]
     assert types.index("function_call") < types.index("function_call_output")

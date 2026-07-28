@@ -1,0 +1,17 @@
+name: Port toolchain (Python)
+description: Install the toolchain the port verifier needs (uv + Python).
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Sync dependencies
+      shell: bash
+      run: uv sync --all-extras
