@@ -11,6 +11,7 @@ from .tool_types import (
     is_client_tool,
     is_generator_tool,
     is_hitl_tool,
+    is_mcp_tool,
     is_server_tool,
 )
 
@@ -58,14 +59,21 @@ async def execute_regular_tool(
     tool: Tool, tool_call: ParsedToolCall, context: Optional[Mapping[str, Any]] = None
 ) -> Dict[str, Any]:
     fn = get_tool_function(tool)
+    source = "mcp" if is_mcp_tool(tool) else "client"
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
         result = await maybe_await(fn["execute"](args, context))
         if fn.get("output_schema") is not None:
             result = validate_schema(fn.get("output_schema"), result)
-        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "result": result}
+        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "source": source, "result": result}
     except Exception as exc:
-        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "result": None, "error": exc}
+        return {
+            "tool_call_id": tool_call.id,
+            "tool_name": tool_call.name,
+            "source": source,
+            "result": None,
+            "error": exc,
+        }
 
 
 async def execute_generator_tool(
@@ -75,6 +83,7 @@ async def execute_generator_tool(
     on_preliminary_result: Optional[Callable[[str, Any], Any]] = None,
 ) -> Dict[str, Any]:
     fn = get_tool_function(tool)
+    source = "mcp" if is_mcp_tool(tool) else "client"
     preliminary: List[Any] = []
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
@@ -120,6 +129,7 @@ async def execute_generator_tool(
         return {
             "tool_call_id": tool_call.id,
             "tool_name": tool_call.name,
+            "source": source,
             "result": final,
             "preliminary_results": preliminary,
         }
@@ -127,6 +137,7 @@ async def execute_generator_tool(
         return {
             "tool_call_id": tool_call.id,
             "tool_name": tool_call.name,
+            "source": source,
             "result": None,
             "preliminary_results": preliminary,
             "error": exc,
@@ -137,15 +148,22 @@ async def execute_hitl_tool(
     tool: Tool, tool_call: ParsedToolCall, context: Optional[Mapping[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
     fn = get_tool_function(tool)
+    source = "mcp" if is_mcp_tool(tool) else "client"
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
         result = await maybe_await(fn["on_tool_called"](args, context))
         if result is None:
             return None
         result = validate_schema(fn.get("output_schema"), result)
-        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "result": result}
+        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "source": source, "result": result}
     except Exception as exc:
-        return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "result": None, "error": exc}
+        return {
+            "tool_call_id": tool_call.id,
+            "tool_name": tool_call.name,
+            "source": source,
+            "result": None,
+            "error": exc,
+        }
 
 
 async def execute_tool(

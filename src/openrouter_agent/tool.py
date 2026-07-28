@@ -52,3 +52,13 @@ def tool(
 
 def server_tool(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"_brand": "server-tool", "config": dict(config)}
+
+
+def mark_mcp(tool_to_mark: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the additive MCP brand to an already-built client tool (see
+    `is_mcp_tool`). Non-mutating: returns a shallow copy carrying `_mcp`, so
+    the tool's runtime behavior and wire shape are unchanged -- only the
+    `is_mcp_tool` check now identifies it as MCP-originated. Used by
+    `@openrouter/mcp`-equivalent integrations to mark wrapped remote tools.
+    """
+    return {**tool_to_mark, "_mcp": True}

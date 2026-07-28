@@ -19,6 +19,8 @@ class CallModelInput(TypedDict, total=False):
     context: Mapping[str, Any]
     shared_context_schema: Any
     allow_final_response: Any
+    strict_final_response: bool
+    hooks: Any
 
 
 CallModelInputWithState = CallModelInput
@@ -42,6 +44,8 @@ _EXCLUDED = {
     "on_turn_start",
     "on_turn_end",
     "allow_final_response",
+    "strict_final_response",
+    "hooks",
 }
 
 

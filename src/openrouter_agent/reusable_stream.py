@@ -18,6 +18,13 @@ class ReusableReadableStream:
             self._started = True
             asyncio.create_task(self._pump())
 
+    @property
+    def is_complete(self) -> bool:
+        """True once the source stream has been fully read into the buffer.
+        A fresh consumer created after this point replays the retained
+        buffer without waiting on the source."""
+        return self._complete
+
     async def _pump(self) -> None:
         try:
             async for item in self._source:

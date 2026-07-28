@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from .hooks_resolve import resolve_hooks
 from .model_result import ModelResult
 from .tool_executor import convert_tools_to_api_format
 
@@ -21,6 +22,8 @@ def call_model(client: Any, request: Mapping[str, Any], options: Optional[Mappin
         "on_turn_start",
         "on_turn_end",
         "allow_final_response",
+        "strict_final_response",
+        "hooks",
     ):
         final_request.pop(key, None)
     if tools is not None:
@@ -45,5 +48,7 @@ def call_model(client: Any, request: Mapping[str, Any], options: Optional[Mappin
             "on_turn_start": request.get("on_turn_start"),
             "on_turn_end": request.get("on_turn_end"),
             "allow_final_response": request.get("allow_final_response"),
+            "strict_final_response": request.get("strict_final_response"),
+            "hooks": resolve_hooks(request.get("hooks")),
         }
     )

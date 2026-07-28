@@ -136,6 +136,10 @@ web = server_tool({"type": "web_search_2025_08_26", "max_results": 5})
 
 Use `require_approval` on a tool or `require_approval` on the request to pause sensitive calls before execution. Approval resume requires a state accessor with async `load()` and `save()` methods.
 
+Manual tools (`execute=False`, no `on_tool_called`) pause the loop with status `"awaiting_client_tools"` when the model calls them, instead of silently dropping the call. Read the unresolved calls via `get_pending_tool_calls()` / `get_state()`, execute them yourself, and continue by calling `call_model` again with `function_call_output` items in `input`.
+
+For durable cross-process storage, serialize state with `serialize_conversation_state` / `deserialize_conversation_state` rather than storing raw dataclass fields. The wire format is versioned (`CONVERSATION_STATE_VERSION`); a version mismatch raises `UnsupportedStateVersionError` and malformed JSON raises `InvalidStateError`, so a store can never silently misinterpret a future shape.
+
 Tool context is kept outside the model transcript. Provide a context mapping with per-tool keys and optional `shared` state. Tool execution receives `ctx["local"]`, `ctx["shared"]`, `ctx["set_context"]`, and `ctx["set_shared_context"]`.
 
 ```python
@@ -151,6 +155,22 @@ result = call_model(
 )
 ```
 
+## Lifecycle Hooks
+
+Pass a `HooksManager` (or an inline `{hook_name: [HookEntry(...)]}` dict of built-in hooks) via `hooks=` to observe or intervene in a run: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PermissionRequest`, `SessionStart`, `SessionEnd`, and `PostModelCall`. Handlers receive a validated payload dict and a `LifecycleHookContext` (`session_id`, `hook_name`, `cancel_event`).
+
+```python
+from openrouter_agent import HookEntry, HookName, HooksManager
+
+hooks = HooksManager()
+hooks.on(HookName.PreToolUse.value, HookEntry(handler=lambda payload, ctx: None, matcher="delete_file"))
+hooks.on(HookName.SessionEnd.value, HookEntry(handler=lambda payload, ctx: print(payload["total_usage"])))
+
+result = call_model(client, {"model": model, "input": prompt, "tools": tools, "hooks": hooks})
+```
+
+`SessionStart` fires once per run with a config summary; `SessionEnd` fires once with aggregated `total_usage` (summed across every `PostModelCall`) and is guaranteed to fire — and any pending async hook work drained — even when a no-tools stream raises. `PreToolUse` can block a call (`{"block": "reason"}`) or mutate its input (`{"mutated_input": {...}}`); `PermissionRequest` can pre-empt the approval gate with `{"decision": "allow" | "deny" | "ask_user"}`; `Stop` can force the loop to keep going past a `stop_when` hit with `{"force_resume": True, "append_prompt": "..."}`. A `HooksManager` instance is safe to share across concurrent `call_model` runs — session identity is threaded per emit, not stored as manager-level mutable state.
+
 ## Stop Conditions
 
 The built-ins mirror the TypeScript package and OR together when provided as a list:
@@ -161,7 +181,7 @@ The built-ins mirror the TypeScript package and OR together when provided as a l
 - `max_cost(dollars)`
 - `finish_reason_is(reason)`
 
-Set `allow_final_response=True` or a string to ask for one final no-tools turn when a stop condition fires on a tool-call turn.
+When a stop condition fires while the model is still emitting tool calls, `call_model` makes one more turn with `tool_choice="none"` by default (tools stay in the request so the prompt-cache prefix survives) so the run ends with a natural-language answer. `allow_final_response` tunes this: `True` or omitted appends `DEFAULT_FINAL_RESPONSE_DIRECTIVE` as a user message, a non-empty string replaces the wording, `""` appends nothing, and `False` disables the extra turn entirely.
 
 ## Format Compatibility
 

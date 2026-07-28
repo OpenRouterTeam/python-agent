@@ -52,6 +52,11 @@ class ConversationState:
     unsent_tool_results: Optional[List[UnsentToolResult]] = None
     partial_response: Optional[PartialResponse] = None
     interrupted_by: Optional[str] = None
+    #: Serialization-contract version for this state blob (see
+    #: `serialize_conversation_state` / `deserialize_conversation_state`).
+    #: Optional so legacy (pre-version-field) states remain constructible;
+    #: absence is treated as version 1 by `deserialize_conversation_state`.
+    version: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,10 @@ ToolWithGenerator: TypeAlias = ClientTool
 class ToolExecutionResult(TypedDict, total=False):
     tool_call_id: str
     tool_name: str
+    #: Origin of the tool: "mcp" for tools branded via `mark_mcp` (wrapped
+    #: from a remote MCP server, whose result is untyped), "client" for
+    #: locally-defined tools. See `is_mcp_tool` / `mark_mcp`.
+    source: Literal["client", "mcp"]
     result: object
     preliminary_results: List[object]
     error: BaseException
@@ -148,6 +157,9 @@ class ToolResultEvent(TypedDict, total=False):
     type: Literal["tool.result", "tool_result"]
     toolCallId: str
     tool_call_id: str
+    #: Origin of the tool result: "mcp" for MCP-branded tools, "client"
+    #: otherwise. See `is_mcp_tool` / `mark_mcp`.
+    source: Literal["client", "mcp"]
     result: object
     preliminaryResults: List[object]
     preliminary_results: List[object]
@@ -243,6 +255,19 @@ def is_server_tool(tool: Mapping[str, Any]) -> bool:
 
 def is_client_tool(tool: Mapping[str, Any]) -> bool:
     return not is_server_tool(tool)
+
+
+#: A client tool additionally branded as originating from an MCP server (see
+#: `mark_mcp`). Purely a structural marker: it does not change execution or
+#: wire serialization, only how `is_mcp_tool` and the `source` field on tool
+#: results discriminate it from a precisely-typed client tool.
+McpBranded = Mapping[str, Any]
+
+
+def is_mcp_tool(tool: Mapping[str, Any]) -> bool:
+    """Type guard: true if the tool carries the additive MCP brand (see
+    `mark_mcp`)."""
+    return bool(isinstance(tool, Mapping) and tool.get("_mcp") is True)
 
 
 def get_tool_function(tool: Mapping[str, Any]) -> Dict[str, Any]:
