@@ -1,7 +1,7 @@
 ---
 upstream: OpenRouterTeam/typescript-agent
 downstream: OpenRouterTeam/python-agent
-model: openrouter/anthropic/claude-sonnet-latest
+model: openrouter/~anthropic/claude-sonnet-latest
 ---
 
 # Python Port Contract — `@openrouter/agent` → `openrouter-agent`
