@@ -41,6 +41,39 @@ jobs:
       - name: Tests
         run: uv run pytest tests/unit -q
 
+  # Live end-to-end tests against the real OpenRouter API: streaming, a real
+  # tool round, approval pause/resume, lifecycle hooks, state serialization
+  # round-trip. Costs a few cents per run (small model, short prompts).
+  #
+  # Warns and exits 0 when the secret is missing (e.g. PRs from forks, where
+  # GitHub withholds secrets) instead of failing — same pattern as upstream
+  # typescript-agent's e2e job.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --all-extras
+
+      - name: Live e2e tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY is not set; skipping live e2e tests."
+            exit 0
+          fi
+          uv run pytest tests/e2e -q
+
   # Reports the port's own mechanical gate. Advisory here, BLOCKING inside the
   # sync job (scripts/upstream) where it gates whether state.yaml advances.
   #

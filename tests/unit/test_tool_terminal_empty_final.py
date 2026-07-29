@@ -83,7 +83,9 @@ async def test_still_loops_when_every_call_in_the_round_resolves() -> None:
     assert len(client.beta.responses.requests) == 2
     followup_input = client.beta.responses.requests[1]["input"]
     fn_call_output = next((i for i in followup_input if i.get("type") == "function_call_output"), None)
-    assert fn_call_output["callId"] == "call_auto_1"
+    # On the wire the SDK's snake_case spelling is used (internal items keep
+    # upstream's camelCase callId; _send converts at the transport boundary).
+    assert fn_call_output["call_id"] == "call_auto_1"
     assert "found it" in fn_call_output["output"]
 
 

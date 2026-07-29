@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -119,3 +120,25 @@ def test_serialize_injects_version_when_absent() -> None:
 
 def test_conversation_state_version_constant() -> None:
     assert CONVERSATION_STATE_VERSION == 1
+
+
+def test_serialize_dumps_sdk_pydantic_items_to_json() -> None:
+    """Live states hold SDK pydantic response items (e.g. OutputFunctionCallItem),
+    which dataclasses.asdict passes through untouched. serialize must emit valid
+    JSON for them (json.dumps default=dump), not raise TypeError. Regression
+    guard for the fix e2e found — this unit test runs on every PR, while the
+    e2e test needs OPENROUTER_API_KEY."""
+    from pydantic import BaseModel
+
+    class FakeSDKItem(BaseModel):
+        type: str = "function_call"
+        callId: str = "call_1"
+        name: str = "t"
+        arguments: str = "{}"
+
+    state = dataclasses.replace(create_initial_state("conv_sdk_items"), messages=[FakeSDKItem()])
+
+    raw = serialize_conversation_state(state)
+
+    parsed = json.loads(raw)
+    assert parsed["messages"][0]["callId"] == "call_1"

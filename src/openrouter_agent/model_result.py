@@ -7,7 +7,7 @@ import time
 import warnings
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ._utils import get_field, is_async_iterable, json_dumps, maybe_await, sdk_request_kwargs
+from ._utils import dump, get_field, is_async_iterable, json_dumps, maybe_await, sdk_request_kwargs
 from .async_params import resolve_async_functions
 from .conversation_state import (
     append_to_messages,
@@ -138,6 +138,22 @@ class ModelResult:
     async def _send(self, request: Mapping[str, Any]) -> Any:
         client = self.options["client"]
         kwargs = sdk_request_kwargs(request)
+        # Normalize input items at the transport boundary only — internal
+        # state and stream events keep the upstream TS shapes:
+        #  - Response items echoed back from a live turn are SDK pydantic
+        #    models (e.g. OutputMessageItem); the request validator wants
+        #    plain dicts, so dump() them.
+        #  - Internal items use upstream's camelCase callId; the generated
+        #    Python SDK validates snake_case call_id.
+        if isinstance(kwargs.get("input"), list):
+            normalized = []
+            for item in kwargs["input"]:
+                if not isinstance(item, Mapping):
+                    item = dump(item)
+                if isinstance(item, Mapping) and "callId" in item:
+                    item = {("call_id" if k == "callId" else k): v for k, v in item.items()}
+                normalized.append(item)
+            kwargs["input"] = normalized
         request_options = dict(self.options.get("options") or {})
         headers = request_options.pop("headers", None) or request_options.pop("http_headers", None)
         if headers:
