@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from ._utils import json_dumps, maybe_await
+from ._utils import dump, json_dumps, maybe_await
 from .tool_types import (
     ConversationState,
     ParsedToolCall,
@@ -99,7 +99,10 @@ def serialize_conversation_state(state: ConversationState) -> str:
     """
     payload = dataclasses.asdict(state)
     payload["version"] = state.version if state.version is not None else CONVERSATION_STATE_VERSION
-    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    # State built from live responses can hold SDK pydantic items (e.g.
+    # OutputFunctionCallItem), which dataclasses.asdict passes through
+    # untouched; dump() them to plain dicts so the wire format stays JSON.
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=dump)
 
 
 def deserialize_conversation_state(raw_json: str) -> ConversationState:
