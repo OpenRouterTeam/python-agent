@@ -1,63 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from openrouter_agent import call_model, tool
-from openrouter_agent.tool_types import ConversationState
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-class MemoryStateAccessor:
-    def __init__(self) -> None:
-        self.stored: Optional[ConversationState] = None
-
-    async def load(self) -> Optional[ConversationState]:
-        return self.stored
-
-    async def save(self, state: ConversationState) -> None:
-        self.stored = state
-
-
-def function_call_item(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
-    return {
-        "type": "function_call",
-        "id": f"fc_{call_id}",
-        "callId": call_id,
-        "name": name,
-        "arguments": arguments,
-    }
-
-
-def text_response(response_id: str, text: str) -> Dict[str, Any]:
-    return {
-        "id": response_id,
-        "output": [
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            }
-        ],
-    }
-
-
-def make_response(response_id: str, output: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {"id": response_id, "output": output}
-
+from tests._fixtures import MemoryStateAccessor, QueuedClient, function_call_item, make_response, text_response
 
 auto_tool = tool(
     name="auto_search",
@@ -91,7 +37,8 @@ async def test_all_manual_round_stops_loop_with_awaiting_client_tools() -> None:
     assert len(state.pending_tool_calls) == 1
 
     # No follow-up request -- the loop stopped after the unresolved manual call.
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
+    assert accessor.stored is not None
     assert accessor.stored.status == "awaiting_client_tools"
 
 
@@ -125,7 +72,7 @@ async def test_mixed_auto_and_manual_round_persists_auto_output_and_pauses_manua
 
     # No follow-up request: it would contain exec_command's function_call with
     # no matching function_call_output, which providers reject.
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
 
     state = await result.get_state()
     assert state.status == "awaiting_client_tools"
@@ -152,7 +99,7 @@ async def test_no_state_accessor_nothing_persisted_but_response_readable() -> No
 
     response = await result.get_response()
     assert response["id"] == "resp_manual"
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
 
     pending = await result.get_pending_tool_calls()
     assert pending == []
@@ -181,6 +128,7 @@ async def test_clears_pending_manual_calls_only_after_a_resume_succeeds() -> Non
         },
     ).get_response()
 
+    assert accessor.stored is not None
     assert accessor.stored.status == "complete"
     assert not accessor.stored.pending_tool_calls
 
@@ -223,7 +171,9 @@ async def test_keeps_pending_manual_calls_when_a_resume_request_fails() -> None:
         raised = True
 
     assert raised
+    assert accessor.stored is not None
     assert accessor.stored.status == "awaiting_client_tools"
+    assert accessor.stored.pending_tool_calls is not None
     assert accessor.stored.pending_tool_calls[0].id == "call_manual_1"
 
 

@@ -3,50 +3,14 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from openrouter_agent import HookEntry, HookName, HooksManager, call_model, step_count_is, tool
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-def function_call_item(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
-    return {"type": "function_call", "id": f"fc_{call_id}", "callId": call_id, "name": name, "arguments": arguments}
-
-
-def text_response(response_id: str, text: str, usage: Any = None) -> Dict[str, Any]:
-    resp = {
-        "id": response_id,
-        "model": "test-model-v1",
-        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-    }
-    if usage is not None:
-        resp["usage"] = usage
-    return resp
-
-
-def tool_call_response(response_id: str, usage: Any = None) -> Dict[str, Any]:
-    resp = {"id": response_id, "output": [function_call_item(f"call_{response_id}", "echo", "{}")]}
-    if usage is not None:
-        resp["usage"] = usage
-    return resp
-
-
-def usage_block(**overrides: Any) -> Dict[str, Any]:
-    base = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150, "cost": 0.002}
-    base.update(overrides)
-    return base
-
+from tests._fixtures import (
+    QueuedClient,
+    function_call_item,
+    make_response,
+    text_response,
+    tool_call_response,
+    usage_block,
+)
 
 echo_tool = tool(name="echo", input_schema=dict, output_schema=dict, execute=lambda params, ctx: {"ok": True})
 
@@ -97,7 +61,7 @@ async def test_session_end_reason_max_turns_when_stop_condition_halts() -> None:
 
 
 async def test_post_model_call_emits_once_per_turn_with_turn_type_labels() -> None:
-    client = QueuedClient([tool_call_response("r1", usage_block()), text_response("r2", "done", usage_block())])
+    client = QueuedClient([tool_call_response("r1", usage=usage_block()), text_response("r2", "done", usage_block())])
     hooks = HooksManager()
     calls: List[Dict[str, Any]] = []
     hooks.on(HookName.PostModelCall.value, HookEntry(handler=lambda p, c: calls.append(p)))
@@ -112,7 +76,7 @@ async def test_post_model_call_emits_once_per_turn_with_turn_type_labels() -> No
 async def test_session_end_aggregates_usage_totals_across_calls() -> None:
     client = QueuedClient(
         [
-            tool_call_response("r1", usage_block(input_tokens=10, output_tokens=5, total_tokens=15, cost=0.01)),
+            tool_call_response("r1", usage=usage_block(input_tokens=10, output_tokens=5, total_tokens=15, cost=0.01)),
             text_response("r2", "done", usage_block(input_tokens=20, output_tokens=8, total_tokens=28, cost=0.02)),
         ]
     )
@@ -148,12 +112,12 @@ async def test_pre_tool_use_block_prevents_execution_and_synthesizes_rejection()
     client = QueuedClient([tool_call_response("r1"), text_response("r2", "done")])
     hooks = HooksManager()
     executed: List[str] = []
-    blocking_tool = tool(
-        name="echo",
-        input_schema=dict,
-        output_schema=dict,
-        execute=lambda params, ctx: executed.append("ran") or {"ok": True},
-    )
+
+    def record_and_ok(params: Any, ctx: Any) -> Dict[str, Any]:
+        executed.append("ran")
+        return {"ok": True}
+
+    blocking_tool = tool(name="echo", input_schema=dict, output_schema=dict, execute=record_and_ok)
     hooks.on(HookName.PreToolUse.value, HookEntry(handler=lambda p, c: {"block": "not allowed"}))
 
     await call_model(
@@ -161,7 +125,7 @@ async def test_pre_tool_use_block_prevents_execution_and_synthesizes_rejection()
     ).get_text()
 
     assert executed == []
-    followup_input = client.beta.responses.requests[1]["input"]
+    followup_input = client.requests[1]["input"]
     output_item = next(i for i in followup_input if i.get("type") == "function_call_output")
     assert "not allowed" in output_item["output"]
 
@@ -219,7 +183,7 @@ async def test_stop_hook_force_resume_is_a_zero_cost_retry_no_extra_model_reques
     assert stop_calls["n"] == 2
     # ...but exactly one model request was ever sent -- the resume itself
     # cost nothing.
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
     assert response["id"] == "r1"
 
 
@@ -250,7 +214,7 @@ async def test_stop_hook_force_resume_then_falls_through_to_normal_tool_round() 
     # Exactly two real model requests: the initial call, and the follow-up
     # after the (only) tool round actually executed -- not one per Stop-hook
     # invocation.
-    assert len(client.beta.responses.requests) == 2
+    assert len(client.requests) == 2
 
 
 async def test_permission_request_deny_synthesizes_rejection_without_pausing() -> None:
@@ -258,11 +222,16 @@ async def test_permission_request_deny_synthesizes_rejection_without_pausing() -
     hooks = HooksManager()
     hooks.on(HookName.PermissionRequest.value, HookEntry(handler=lambda p, c: {"decision": "deny", "reason": "nope"}))
     executed: List[str] = []
+
+    def record_and_ok(params: Any, ctx: Any) -> Dict[str, Any]:
+        executed.append("ran")
+        return {"ok": True}
+
     gated_tool = tool(
         name="echo",
         input_schema=dict,
         output_schema=dict,
-        execute=lambda params, ctx: executed.append("ran") or {"ok": True},
+        execute=record_and_ok,
         require_approval=True,
     )
 
@@ -272,7 +241,7 @@ async def test_permission_request_deny_synthesizes_rejection_without_pausing() -
 
     assert text == "done"
     assert executed == []
-    followup_input = client.beta.responses.requests[1]["input"]
+    followup_input = client.requests[1]["input"]
     output_item = next(i for i in followup_input if i.get("type") == "function_call_output")
     assert "nope" in output_item["output"]
 
@@ -311,7 +280,7 @@ async def test_user_prompt_submit_can_reject_a_string_prompt() -> None:
 
     assert raised
     # The model was never called: the prompt was rejected before dispatch.
-    assert len(client.beta.responses.requests) == 0
+    assert len(client.requests) == 0
 
 
 async def test_user_prompt_submit_can_mutate_a_string_prompt() -> None:
@@ -324,7 +293,7 @@ async def test_user_prompt_submit_can_mutate_a_string_prompt() -> None:
 
     await call_model(client, {"model": "test-model", "input": "the secret is 42", "hooks": hooks}).get_text()
 
-    sent_input = client.beta.responses.requests[0]["input"]
+    sent_input = client.requests[0]["input"]
     assert "[redacted]" in sent_input[0]["content"]
 
 
@@ -341,7 +310,7 @@ async def test_user_prompt_submit_mutates_last_user_message_in_array_input() -> 
         {"model": "test-model", "input": [{"role": "user", "content": "hello there"}], "hooks": hooks},
     ).get_text()
 
-    sent_input = client.beta.responses.requests[0]["input"]
+    sent_input = client.requests[0]["input"]
     assert sent_input[-1]["content"] == "HELLO THERE"
 
 
@@ -353,12 +322,12 @@ async def test_pre_tool_use_mutated_input_actually_reaches_tool_execute() -> Non
         HookName.PreToolUse.value,
         HookEntry(handler=lambda p, c: {"mutated_input": {"mutated": True, **p["tool_input"]}}),
     )
-    recording_tool = tool(
-        name="echo",
-        input_schema=dict,
-        output_schema=dict,
-        execute=lambda params, ctx: received_args.append(params) or {"ok": True},
-    )
+
+    def record_args(params: Any, ctx: Any) -> Dict[str, Any]:
+        received_args.append(params)
+        return {"ok": True}
+
+    recording_tool = tool(name="echo", input_schema=dict, output_schema=dict, execute=record_args)
 
     await call_model(
         client, {"model": "test-model", "input": "hi", "tools": [recording_tool], "hooks": hooks}
@@ -372,6 +341,7 @@ async def test_session_end_fires_with_reason_error_on_no_tools_transport_failure
     no-tools path's transport raises, and the drain must not mask the
     original error."""
 
+    # Bespoke: injects a transport error, which QueuedClient cannot express.
     class FailingResponses:
         async def send_async(self, **kwargs: Any) -> Any:
             raise RuntimeError("transport exploded")
@@ -399,13 +369,13 @@ async def test_permission_request_allow_executes_promoted_tool_exactly_once() ->
     the promotion branch and again in the normal auto-execute round."""
     client = QueuedClient(
         [
-            {
-                "id": "r1",
-                "output": [
-                    function_call_item("call_auto", "auto_run", "{}"),
-                    function_call_item("call_gated", "gated_run", "{}"),
+            make_response(
+                "r1",
+                [
+                    function_call_item("call_auto", "auto_run"),
+                    function_call_item("call_gated", "gated_run"),
                 ],
-            },
+            ),
             text_response("r2", "done"),
         ]
     )

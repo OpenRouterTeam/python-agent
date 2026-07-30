@@ -1,42 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from openrouter_agent import call_model, tool
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-def function_call_item(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
-    return {"type": "function_call", "id": f"fc_{call_id}", "callId": call_id, "name": name, "arguments": arguments}
-
-
-def text_response(response_id: str, text: str) -> Dict[str, Any]:
-    return {
-        "id": response_id,
-        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-    }
-
-
-def make_response(response_id: str, output: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {"id": response_id, "output": output}
+from tests._fixtures import QueuedClient, function_call_item, make_response, text_response
 
 
 def empty_response(response_id: str = "resp_empty") -> Dict[str, Any]:
-    return {"id": response_id, "output": []}
+    """A response with no output items -- the empty-final case under test."""
+    return make_response(response_id, [])
 
 
 auto_tool = tool(
@@ -65,7 +37,7 @@ async def test_stops_loop_instead_of_orphaned_function_call_followup() -> None:
     response = await result.get_response()
 
     assert response["id"] == "resp_mixed"
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
 
 
 async def test_still_loops_when_every_call_in_the_round_resolves() -> None:
@@ -80,9 +52,10 @@ async def test_still_loops_when_every_call_in_the_round_resolves() -> None:
     text = await result.get_text()
 
     assert text == "All done."
-    assert len(client.beta.responses.requests) == 2
-    followup_input = client.beta.responses.requests[1]["input"]
+    assert len(client.requests) == 2
+    followup_input = client.requests[1]["input"]
     fn_call_output = next((i for i in followup_input if i.get("type") == "function_call_output"), None)
+    assert fn_call_output is not None
     # On the wire the SDK's snake_case spelling is used (internal items keep
     # upstream's camelCase callId; _send converts at the transport boundary).
     assert fn_call_output["call_id"] == "call_auto_1"
@@ -102,7 +75,7 @@ async def test_retries_once_then_accepts_empty_final_after_a_completed_tool_roun
 
     text = await result.get_text()
     assert text == ""
-    assert len(client.beta.responses.requests) == 3
+    assert len(client.requests) == 3
 
     response = await result.get_response()
     assert response["id"] == "resp_empty_2"
@@ -121,7 +94,7 @@ async def test_returns_text_when_the_empty_final_retry_succeeds() -> None:
     text = await call_model(client, {"model": "test-model", "input": "review", "tools": [post_comment_tool]}).get_text()
 
     assert text == "Done posting."
-    assert len(client.beta.responses.requests) == 3
+    assert len(client.requests) == 3
 
 
 async def test_retry_forces_tool_choice_none_while_keeping_tools_in_request() -> None:
@@ -135,11 +108,11 @@ async def test_retry_forces_tool_choice_none_while_keeping_tools_in_request() ->
 
     await call_model(client, {"model": "test-model", "input": "review", "tools": [post_comment_tool]}).get_text()
 
-    followup_request = client.beta.responses.requests[1]
+    followup_request = client.requests[1]
     assert "tools" in followup_request
     assert followup_request.get("tool_choice") != "none"
 
-    retry_request = client.beta.responses.requests[2]
+    retry_request = client.requests[2]
     assert "tools" in retry_request
     assert retry_request["tool_choice"] == "none"
     assert retry_request["input"] == followup_request["input"]
@@ -169,7 +142,7 @@ async def test_throws_on_empty_final_when_strict_final_response_is_true() -> Non
         assert "Invalid final response: empty or invalid output" in str(error)
 
     assert raised
-    assert len(client.beta.responses.requests) == 2
+    assert len(client.requests) == 2
 
 
 async def test_still_throws_on_empty_output_when_no_tool_rounds_completed() -> None:
@@ -182,7 +155,7 @@ async def test_still_throws_on_empty_output_when_no_tool_rounds_completed() -> N
         raised = True
 
     assert raised
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1
 
 
 async def test_does_not_send_client_only_fields_to_the_api() -> None:
@@ -198,7 +171,7 @@ async def test_does_not_send_client_only_fields_to_the_api() -> None:
         },
     ).get_text()
 
-    request = client.beta.responses.requests[0]
+    request = client.requests[0]
     for key in (
         "strict_final_response",
         "allow_final_response",

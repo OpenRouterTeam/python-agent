@@ -1,3 +1,16 @@
+"""Stream item type guards.
+
+Ported for 1:1 module parity with upstream `lib/stream-type-guards.ts`. Upstream
+routes `model-result`, `tool-executor`, and `stream-transformers` through these
+predicates; this port inlines the equivalent checks in `stream_transformers.py`,
+so nothing here is currently reachable.
+
+Kept deliberately: the porting contract (`.upstreamer/upstreamer.md`) requires one
+Python module per upstream lib module, so deleting this would be a parity
+regression that the next sync re-creates. Excluded from the coverage floor in
+`pyproject.toml` rather than deleted. Do not re-litigate.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional

@@ -187,6 +187,35 @@ When a stop condition fires while the model is still emitting tool calls, `call_
 
 Use `from_claude_messages` / `to_claude_message` for Anthropic-style messages and `from_chat_messages` / `to_chat_message` for OpenAI Chat-style messages. Content that cannot be represented directly is carried as `unsupported_content` instead of being silently discarded.
 
+## Development
+
+```bash
+uv sync --frozen --all-extras
+
+uv run pytest tests/unit -q              # deterministic suite
+uv run pytest tests/unit --cov           # with coverage
+uv run mypy src tests                    # types, tests included
+uv run ruff check . && uv run ruff format --check .
+```
+
+`tests/e2e/` runs against the live OpenRouter API and skips cleanly without
+`OPENROUTER_API_KEY`:
+
+```bash
+OPENROUTER_API_KEY=sk-or-... uv run pytest tests/e2e -q
+```
+
+Tests share fixtures from `tests/_fixtures.py` — `make_response`,
+`function_call_item`, `text_response`, `tool_call_response`, `QueuedClient`,
+`MemoryStateAccessor`. Use them instead of hand-rolling a fake client:
+`make_response` populates every field the real Responses API returns, so a stub
+cannot be more permissive than production.
+
+CI runs the suite on Python 3.9, 3.11, and 3.13, type-checks `src` and `tests`,
+enforces a coverage floor, and verifies the built wheel imports in isolation.
+Because this package is a port, tests are held to upstream behavior — see the
+Test Parity section of `.upstreamer/upstreamer.md` and [PORTING.md](PORTING.md).
+
 ## Parity Notes
 
 This is a faithful Python port of the `@openrouter/agent` public surface, with Python-native names (`call_model`, `server_tool`, `get_text_stream`) and Pydantic v2 schemas in place of Zod. Runtime behavior is preserved where the Python SDK exposes matching Responses API types. Static type inference is necessarily looser than TypeScript conditional types; the package ships `py.typed`, `Protocol`/dataclass aliases, and clear runtime validation rather than pretending to reproduce TypeScript tuple inference exactly.

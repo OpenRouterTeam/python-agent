@@ -56,6 +56,7 @@ def test_round_trips_a_rich_awaiting_client_tools_state() -> None:
     assert restored.pending_tool_calls == [
         ParsedToolCall(id="call_manual_1", name="exec_command", arguments={"command": "ls"})
     ]
+    assert restored.unsent_tool_results is not None
     assert restored.unsent_tool_results[0].call_id == "call_auto_1"
 
 

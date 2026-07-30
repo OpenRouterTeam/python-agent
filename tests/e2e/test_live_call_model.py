@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any, Dict, List
 
 import pytest
 
@@ -107,12 +108,16 @@ async def test_live_approval_pause_and_resume_across_calls() -> None:
 
     executed = []
 
+    def delete_record(params, ctx):
+        executed.append(params)
+        return {"deleted": True}
+
     delete_tool = tool(
         name="delete_record",
         description="Deletes the record. Requires approval.",
         input_schema=dict,
         output_schema=dict,
-        execute=lambda params, ctx: executed.append(params) or {"deleted": True},
+        execute=delete_record,
         require_approval=True,
     )
 
@@ -154,6 +159,7 @@ async def test_live_approval_pause_and_resume_across_calls() -> None:
     text = await resumed.get_text()
 
     assert len(executed) == 1, "approved tool did not execute exactly once"
+    assert state.current is not None
     assert state.current.status == "complete"
     assert isinstance(text, str) and text.strip()
 
@@ -163,8 +169,8 @@ async def test_live_hooks_fire_on_real_traffic() -> None:
     all fire during a live tool round, and SessionEnd reports real usage."""
     from openrouter_agent import HookEntry, HookName, HooksManager, call_model, tool
 
-    fired = []
-    usage_totals = {}
+    fired: List[str] = []
+    usage_totals: Dict[str, Any] = {}
 
     manager = HooksManager()
     for hook_name in (
@@ -173,10 +179,12 @@ async def test_live_hooks_fire_on_real_traffic() -> None:
         HookName.PostToolUse,
         HookName.PostModelCall,
     ):
-        manager.on(
-            hook_name.value,
-            HookEntry(handler=lambda payload, ctx, _n=hook_name.value: fired.append(_n) or {}),
-        )
+
+        def record(payload: Any, ctx: Any, _n: str = hook_name.value) -> Dict[str, Any]:
+            fired.append(_n)
+            return {}
+
+        manager.on(hook_name.value, HookEntry(handler=record))
 
     def session_end(payload, ctx):
         fired.append(HookName.SessionEnd.value)
@@ -226,12 +234,17 @@ async def test_live_state_serialization_round_trip_resumes() -> None:
     )
 
     executed = []
+
+    def launch(params, ctx):
+        executed.append(1)
+        return {"launched": True}
+
     approve_tool = tool(
         name="launch",
         description="Launches the rocket. Requires approval.",
         input_schema=dict,
         output_schema=dict,
-        execute=lambda params, ctx: executed.append(1) or {"launched": True},
+        execute=launch,
         require_approval=True,
     )
 
@@ -247,6 +260,7 @@ async def test_live_state_serialization_round_trip_resumes() -> None:
         },
     )
     await first.get_response()
+    assert state.current is not None
     assert state.current.status == "awaiting_approval"
     pending = await first.get_pending_tool_calls()
 
@@ -269,4 +283,5 @@ async def test_live_state_serialization_round_trip_resumes() -> None:
     await resumed.get_text()
 
     assert executed == [1]
+    assert restored.current is not None
     assert restored.current.status == "complete"

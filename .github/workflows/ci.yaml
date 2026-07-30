@@ -1,8 +1,15 @@
 name: CI
 
-# This repo had no CI. Without it the port verifier's pytest/ruff/mypy calls only
-# ever ran inside the sync job, so a generated PR reached review with no
-# independent signal. This runs the same checks on every PR and push.
+# This repo is an auto-generated port: `scripts/upstream` runs an LLM against
+# .upstreamer/upstreamer.md and opens a PR. CI is therefore the only mechanical
+# thing between a generated diff and main, so it gates on the things that
+# actually break a port — cross-version behavior, type safety in tests as well as
+# src, coverage that cannot silently decay, and an installable wheel.
+#
+# Required checks (branch protection):
+#   check (py3.9) · check (py3.11) · check (py3.13) · types · build · verify-port
+# Deliberately NOT required: e2e — it exits 0 when the API key is absent (forks),
+# so requiring it would be a green rubber stamp.
 
 on:
   pull_request:
@@ -10,8 +17,71 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Supersede stale runs on a PR branch. Pushes to main are never cancelled: that
+# would leave gaps in the main-branch signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # pyproject declares requires-python = ">=3.9.2", but CI used to test 3.11
+  # only, so a 3.9- or 3.13-specific break could land unnoticed. asyncio
+  # primitives are the real hazard here: asyncio.Condition() binds the running
+  # loop eagerly on 3.9 and lazily on 3.13.
   check:
+    name: check (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Do not let a 3.9-only failure mask a 3.13-only failure.
+      fail-fast: false
+      matrix:
+        # "3.9" resolves to 3.9.25 and satisfies ">=3.9.2". The exact patch 3.9.2
+        # is NOT pinnable: actions/python-versions ships no 3.9.2 build for
+        # ubuntu-24.04 (16.04/18.04/20.04 only), so `python-version: "3.9.2"`
+        # fails to install on ubuntu-latest.
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --frozen: fail if uv.lock is out of sync with pyproject.toml rather than
+      # silently resolving something different from what was reviewed.
+      - run: uv sync --frozen --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      # Deterministic tests only. tests/e2e needs OPENROUTER_API_KEY and skips
+      # cleanly without it.
+      - name: Tests
+        if: matrix.python-version != '3.11'
+        run: uv run pytest tests/unit -q
+
+      # Coverage on one leg only: three legs would triple runtime to produce the
+      # same single number.
+      #
+      # Ratchet floor. Coverage may go up, never down — raise this when it rises.
+      # Lowering it is allowed only with an explicit reason in the PR body, since
+      # a port run that adds source without tests shows up here first.
+      - name: Tests with coverage
+        if: matrix.python-version == '3.11'
+        run: >-
+          uv run pytest tests/unit -q
+          --cov --cov-report=term-missing --cov-report=xml
+          --cov-fail-under=83
+
+  types:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,21 +95,55 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --all-extras
+      - run: uv sync --frozen --all-extras
 
-      - name: Lint
-        run: uv run ruff check .
+      - name: Lockfile is in sync with pyproject
+        run: uv lock --check
 
-      - name: Format
-        run: uv run ruff format --check .
-
+      # tests/ included on purpose: CI used to check src only, so every fake
+      # client and payload builder in tests/ was unverified — exactly where an
+      # Optional deref makes an assertion silently no-op. Not matrixed because
+      # [tool.mypy] python_version = "3.9" pins the analysis target, so the
+      # output is identical on every interpreter.
       - name: Type check
-        run: uv run mypy src
+        run: uv run mypy src tests
 
-      # Deterministic tests only. tests/e2e needs OPENROUTER_API_KEY and skips
-      # cleanly without it.
-      - name: Tests
-        run: uv run pytest tests/unit -q
+  # A package that imports fine from the source tree can still ship a broken
+  # wheel (missing package data, py.typed, or a module the build excludes).
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built on the oldest supported interpreter so a wheel that only imports
+      # on newer syntax fails here rather than for a user on 3.9.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build wheel and sdist
+        run: uv build --out-dir dist
+
+      # --isolated --no-project: install only the built wheel, with the source
+      # tree off sys.path, so this proves the artifact rather than the repo.
+      - name: Import the public API from the built wheel
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv run --isolated --no-project --with "$wheel" python -c "
+          from openrouter_agent import call_model, OpenRouter, tool, ModelResult
+          import importlib.metadata as md
+          print('imported openrouter-agent', md.version('openrouter-agent'))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
   # Live end-to-end tests against the real OpenRouter API: streaming, a real
   # tool round, approval pause/resume, lifecycle hooks, state serialization
@@ -47,7 +151,7 @@ jobs:
   #
   # Warns and exits 0 when the secret is missing (e.g. PRs from forks, where
   # GitHub withholds secrets) instead of failing — same pattern as upstream
-  # typescript-agent's e2e job.
+  # typescript-agent's e2e job. That is also why it must not be a required check.
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -62,7 +166,7 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --all-extras
+      - run: uv sync --frozen --all-extras
 
       - name: Live e2e tests
         env:
@@ -74,23 +178,25 @@ jobs:
           fi
           uv run pytest tests/e2e -q
 
-  # Reports the port's own mechanical gate. Advisory here, BLOCKING inside the
-  # sync job (scripts/upstream) where it gates whether state.yaml advances.
+  # The port's own mechanical gate — the same script `scripts/upstream` runs to
+  # decide whether .upstreamer/state.yaml may advance.
   #
-  # Advisory on purpose: the port is currently a minor version behind upstream, so
-  # the required-API check fails by design until the first sync lands. Making that
-  # a red required check on every unrelated PR just teaches people to ignore CI.
-  # The signal still shows up in the job summary.
+  # Blocking. It was previously advisory on the premise that the required-API
+  # check "fails by design until the first sync lands"; that is no longer true —
+  # the verifier passes with all 31 required symbols exported and 0 failures, so
+  # advisory would only let that regress silently.
+  #
+  # It intentionally re-runs ruff/mypy/pytest that `check` also runs: the point is
+  # to exercise them exactly as the sync pipeline does, so CI and the port gate
+  # cannot drift apart.
   verify-port:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/port-toolchain
-      - name: Port verifier (advisory)
+      - name: Port verifier
         id: verify
-        continue-on-error: true
         run: |
           set -o pipefail
           ./.upstreamer/scripts/verify.sh 2>&1 | tee /tmp/verify.log
@@ -104,8 +210,7 @@ jobs:
             if [ "${{ steps.verify.outcome }}" = "success" ]; then
               echo "Port is in sync with its parity floor."
             else
-              echo "Parity gaps below. Expected until the port catches up to upstream —"
-              echo "advisory here, blocking inside the sync job."
+              echo "Parity floor broken — see the failures below."
             fi
             echo
             echo '```'

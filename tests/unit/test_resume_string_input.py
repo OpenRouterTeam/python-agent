@@ -1,42 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
 from openrouter_agent import call_model
-from openrouter_agent.tool_types import ConversationState
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-class MemoryStateAccessor:
-    def __init__(self) -> None:
-        self.stored: Optional[ConversationState] = None
-
-    async def load(self) -> Optional[ConversationState]:
-        return self.stored
-
-    async def save(self, state: ConversationState) -> None:
-        self.stored = state
-
-
-def text_response(response_id: str, text: str) -> Dict[str, Any]:
-    return {
-        "id": response_id,
-        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-    }
+from tests._fixtures import MemoryStateAccessor, QueuedClient, text_response
 
 
 async def test_normalizes_a_bare_string_input_when_resuming_loaded_history() -> None:
@@ -45,11 +10,18 @@ async def test_normalizes_a_bare_string_input_when_resuming_loaded_history() -> 
 
     await call_model(client, {"model": "test-model", "input": "First question", "state": accessor}).get_text()
     assert accessor.stored is not None
-    assert len(accessor.stored.messages) > 0
+    # Assert *which* messages persisted, not merely that some did: a bare
+    # `len(...) > 0` passes whether the port stored the user turn, the assistant
+    # turn, both, or forty.
+    roles = [message["role"] for message in accessor.stored.messages if isinstance(message, dict) and "role" in message]
+    assert "user" in roles, f"user turn was not persisted; roles={roles}"
+    stored_text = str(accessor.stored.messages)
+    assert "First question" in stored_text
+    assert "First answer." in stored_text
 
     await call_model(client, {"model": "test-model", "input": "Follow-up question", "state": accessor}).get_text()
 
-    request = client.beta.responses.requests[1]
+    request = client.requests[1]
     assert isinstance(request["input"], list)
     for item in request["input"]:
         assert not isinstance(item, str)
@@ -68,7 +40,7 @@ async def test_still_accepts_array_input_when_resuming_loaded_history() -> None:
         {"model": "test-model", "input": [{"role": "user", "content": "Follow-up question"}], "state": accessor},
     ).get_text()
 
-    request = client.beta.responses.requests[1]
+    request = client.requests[1]
     last = request["input"][-1]
     assert last["role"] == "user"
     assert last["content"] == "Follow-up question"

@@ -51,13 +51,16 @@ holds.
 | `.upstreamer/eval.md` | Parity gate: fresh-context behavioral review. |
 | `.upstreamer/eval-report.md` | Latest eval result, or a bankruptcy report. |
 | `.upstreamer/skills/upstreamer-converter/` | Execution discipline for the porting agent. |
+| `.upstreamer/skills/port-test-quality/` | How to port upstream tests and keep coverage honest. |
 | `.upstreamer/port.env` | Local secrets. **Gitignored.** |
 | `scripts/upstream` | The wrapper. |
 
 ## Two gates, and why state matters
 
-**Mechanical** (`verify.sh`) — objective: does it build, lint, type-check, pass
-tests, and export every symbol the contract requires.
+**Mechanical** (`verify.sh`) — objective: does it build, lint, type-check (`src`
+*and* `tests`), pass tests, hold the coverage floor, and export every symbol the
+contract requires. It also reports which upstream test files have no Python
+counterpart — advisory, since severity is the eval's call.
 
 **Parity** (`eval.md`) — judgment, run in a fresh context that reads the upstream
 reference directly: does it actually *behave* like upstream. This is the gate that
@@ -113,5 +116,11 @@ Review it as a *port*, not a normal diff:
 2. Read the upstream delta yourself for anything load-bearing — the tool loop,
    state serialization, approval/HITL ordering, hooks, streaming.
 3. Confirm new tests assert *upstream behavior*, not merely the port's own shape.
+   The contract's Test Parity section lists the patterns that look like coverage
+   and are not — membership-only stream assertions, `assert x is not None` as a
+   test's only assertion, "a tool ran" where the invariant is *exactly once*.
+   Check the verifier's test-parity note for upstream test files left unported.
 4. Any new naming mapping the run derived should be promoted into the contract's
    naming table.
+5. Check the coverage floor did not move down. It is a ratchet; lowering it needs
+   a stated reason.
