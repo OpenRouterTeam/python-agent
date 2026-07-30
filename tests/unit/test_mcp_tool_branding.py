@@ -1,38 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
 from openrouter_agent import call_model, is_mcp_tool, mark_mcp, tool
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-def function_call_item(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
-    return {"type": "function_call", "id": f"fc_{call_id}", "callId": call_id, "name": name, "arguments": arguments}
-
-
-def text_response(response_id: str, text: str) -> Dict[str, Any]:
-    return {
-        "id": response_id,
-        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-    }
-
-
-def make_response(response_id: str, output: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {"id": response_id, "output": output}
+from tests._fixtures import QueuedClient, function_call_item, make_response, text_response
 
 
 def test_mark_mcp_is_non_mutating_and_is_mcp_tool_detects_the_brand() -> None:

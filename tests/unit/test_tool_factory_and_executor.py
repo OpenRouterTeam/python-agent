@@ -35,7 +35,9 @@ async def test_regular_tool_executes_and_validates() -> None:
     result = await execute_tool(created, ParsedToolCall(id="call_1", name="double", arguments={"value": 3}))
 
     assert result is not None
-    assert result["error"] is None if "error" in result else True
+    # A successful execution must not report an error: the key is either absent
+    # or explicitly None. `assert x is None if k in x else True` could not fail.
+    assert result.get("error") is None
     assert result["result"].doubled == 6
 
 

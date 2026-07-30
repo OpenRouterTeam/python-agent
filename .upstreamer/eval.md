@@ -37,6 +37,14 @@ version behind on real behavior. That failure mode is the one to catch.
    port's own shape rather than upstream behavior are not parity coverage.
 5. Prefer reading upstream tests: they encode the behavior contract most
    precisely. Check the port covers the same cases.
+6. Diff the two test suites by file, so an unported upstream test file is visible
+   rather than inferred:
+   ```bash
+   ls tmp/upstreamer/upstream/packages/agent/tests/unit/*.test.ts \
+     | sed 's|.*/||;s|\.test\.ts$||;s|-|_|g' | sort > /tmp/up.txt
+   ls tests/unit/test_*.py | sed 's|.*/test_||;s|\.py$||' | sort > /tmp/port.txt
+   comm -23 /tmp/up.txt /tmp/port.txt   # upstream tests with no Python counterpart
+   ```
 
 ## Required Qualities
 
@@ -71,6 +79,26 @@ even on no-tools stream error paths.
 
 **Compatibility helpers.** Claude/Chat conversion round-trips preserve metadata,
 reasoning, tool use, and unsupported content.
+
+**Test parity.** Judge the tests as coverage of *upstream* behavior, not as
+evidence the port ran. Concretely:
+
+- Enumerate upstream's test files at the target commit and check each has a Python
+  counterpart (`foo-bar.test.ts` → `test_foo_bar.py`). List every unported file
+  with the invariant it protects. Unported tests covering the tool loop, state,
+  approval/HITL ordering, hooks, or streaming are **FAIL**-worthy; cosmetic or
+  type-level ones are warnings.
+- Read what the new tests assert. A test that would still pass if the port
+  diverged from upstream is not coverage. Specifically flag: membership-only
+  assertions on event streams (no order or count), `assert x is not None` as a
+  test's only assertion, `len(xs) > 0` where the invariant is which items,
+  vacuous conditional asserts, and "a tool executed" where upstream asserts
+  **exactly once**.
+- Flag any new hand-rolled fake client or partial response dict that bypasses
+  `tests/_fixtures.py`. Partial stubs omit fields the real API always sends, which
+  is how a port passes its own suite while mishandling production payloads.
+- Confirm the coverage floor in `.github/workflows/ci.yaml` was not lowered. A
+  lowered floor with no stated reason is a finding.
 
 **Divergences are the documented ones.** Every difference from upstream is either
 in the contract's Idiomatic Divergences section or recorded as a compatibility

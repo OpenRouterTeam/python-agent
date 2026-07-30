@@ -1,39 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from openrouter_agent import call_model, step_count_is, tool
 from openrouter_agent.model_result import DEFAULT_FINAL_RESPONSE_DIRECTIVE
-
-
-class QueuedResponses:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self._responses = list(responses)
-        self.requests: List[Dict[str, Any]] = []
-
-    async def send_async(self, **kwargs: Any) -> Any:
-        self.requests.append(kwargs)
-        return self._responses.pop(0)
-
-
-class QueuedClient:
-    def __init__(self, responses: List[Dict[str, Any]]) -> None:
-        self.beta = type("Beta", (), {"responses": QueuedResponses(responses)})()
-
-
-def function_call_item(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
-    return {"type": "function_call", "id": f"fc_{call_id}", "callId": call_id, "name": name, "arguments": arguments}
-
-
-def text_response(response_id: str, text: str) -> Dict[str, Any]:
-    return {
-        "id": response_id,
-        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
-    }
+from tests._fixtures import QueuedClient, text_response
+from tests._fixtures import tool_call_response as _tool_call_response
 
 
 def tool_call_response(response_id: str) -> Dict[str, Any]:
-    return {"id": response_id, "output": [function_call_item("call_weather", "get_weather", '{"city":"nyc"}')]}
+    """The one weather call every test in this file queues as its first turn."""
+    return _tool_call_response(response_id, "get_weather", call_id="call_weather", arguments='{"city":"nyc"}')
 
 
 weather_tool = tool(
@@ -59,7 +36,7 @@ async def test_bare_true_appends_default_directive() -> None:
     ).get_text()
 
     assert text == "Final summary."
-    second_request = client.beta.responses.requests[1]
+    second_request = client.requests[1]
     assert "tools" in second_request
     assert second_request["tool_choice"] == "none"
     last_item = second_request["input"][-1]
@@ -81,7 +58,7 @@ async def test_omitted_allow_final_response_defaults_to_enabled_with_directive()
     ).get_text()
 
     assert text == "Final summary."
-    second_request = client.beta.responses.requests[1]
+    second_request = client.requests[1]
     assert second_request["tool_choice"] == "none"
     assert second_request["input"][-1] == {"role": "user", "content": DEFAULT_FINAL_RESPONSE_DIRECTIVE}
 
@@ -100,7 +77,7 @@ async def test_non_empty_string_overrides_directive() -> None:
         },
     ).get_text()
 
-    second_request = client.beta.responses.requests[1]
+    second_request = client.requests[1]
     assert second_request["input"][-1] == {"role": "user", "content": "Summarize now."}
 
 
@@ -118,7 +95,7 @@ async def test_empty_string_appends_no_message() -> None:
         },
     ).get_text()
 
-    second_request = client.beta.responses.requests[1]
+    second_request = client.requests[1]
     last_item = second_request["input"][-1]
     assert last_item.get("type") == "function_call_output"
 
@@ -139,4 +116,4 @@ async def test_false_disables_the_final_turn_entirely() -> None:
     response = await result.get_response()
 
     assert response["id"] == "resp_1"
-    assert len(client.beta.responses.requests) == 1
+    assert len(client.requests) == 1

@@ -177,10 +177,78 @@ Module naming follows the existing layout: upstream `lib/tool-executor.ts` →
 `src/openrouter_agent/tool_executor.py`. Keep that correspondence for new
 modules so the port stays navigable against the reference.
 
+## Test Parity
+
+Upstream's test suite is the most precise statement of the behavior contract that
+exists. Porting the source without porting the tests produces a package that
+compiles, passes its own assertions, and is a version behind on real behavior —
+the exact failure this pipeline exists to prevent. So tests are in scope, not a
+nice-to-have.
+
+**Upstream tests are part of the port.**
+
+- Maintain a 1:1 file mapping: upstream `tests/unit/foo-bar.test.ts` →
+  `tests/unit/test_foo_bar.py`. When a sync touches an upstream test file, port
+  the corresponding cases in the same run.
+- When upstream **adds** a test file, port it. When upstream **changes**
+  assertions in one, update the Python counterpart to match. An upstream test
+  file with no Python counterpart is a parity gap — report it explicitly in the
+  final report, with the invariant it protects and a severity assessment.
+- A behavioral change ported without a test asserting it is incomplete work.
+
+**Assert upstream behavior, not the port's own shape.** These are the recurring
+ways a test looks like coverage without being coverage. All are rejectable:
+
+- Membership-only assertions on event streams. Assert **order and count**:
+  `types.count("turn.end") == 1` and `types.index(...) < types.index(...)`, not
+  `"turn.end" in types`. A membership check passes when an event fires twice,
+  fires out of order, or carries the wrong payload.
+- Vacuous conditional asserts. `assert x is None if "x" in d else True` is
+  `assert True` on the missing branch.
+- `assert x is not None` as a test's *only* assertion. As a mypy-narrowing line
+  before a real assertion it is fine; alone it asserts almost nothing.
+- `assert len(xs) > 0` where the invariant is *which* items are present.
+- Re-asserting a stub's own canned data, or that a type guard returns True for an
+  object the test built with that guard's marker.
+- Asserting an execution *happened* when the invariant is that it happened
+  **exactly once**. Double-execution of a side-effecting tool is a real upstream
+  regression class; only a count catches it.
+
+**Use the shared fixtures.** `tests/_fixtures.py` provides `make_response`,
+`function_call_item`, `text_response`, `tool_call_response`, `QueuedClient`, and
+`MemoryStateAccessor`. Do not hand-roll new fake clients or partial response
+dicts: `make_response` populates every field the real Responses API returns, so a
+stub cannot be more forgiving than production. If a test needs bespoke transport
+behavior (error injection, streaming), build its payloads with these builders.
+
+**Coverage may not decay.** `--cov-fail-under` in `.github/workflows/ci.yaml` is a
+ratchet. A port run may raise it, never lower it. If new ported source drops
+coverage below the floor, the missing tests are part of the port — write them.
+
+**Comment deliberate divergences at the assertion.** Where the port must assert
+something different from upstream, say why with a source reference. Known case:
+outgoing `function_call_output` items use snake_case `call_id`, not upstream's
+`callId`, because `ModelResult._send` normalizes at the transport boundary
+(`model_result.py:148-156`). Without the comment, a later reader "fixes" it back
+and breaks the test.
+
+**Keep tests deterministic.** Never port a timing race as `asyncio.sleep`. Gate on
+`asyncio.Event` so ordering is explicit — see
+`tests/unit/test_turn_end_race_condition.py`. Construct `asyncio` primitives
+inside the async test body: `asyncio.Condition()` binds the running loop eagerly
+on 3.9 and lazily on 3.13, so module-scope construction breaks on 3.9 only.
+
+**Prefer the public API over private internals.** Upstream tests sometimes cast to
+an internal type and call a private method. Where this port's internals differ
+(e.g. it has no `_execute_tools_if_needed` — the loop is inlined in
+`ModelResult._run`), drive the same invariant through `call_model` instead. The
+test then survives the next sync's refactors.
+
 ## Verification
 
-`.upstreamer/scripts/verify.sh` must pass: `ruff`, `mypy`, `pytest`, plus the
-required-public-API presence check and no-TS-artifact check.
+`.upstreamer/scripts/verify.sh` must pass: `ruff`, `mypy` (over `src` **and**
+`tests`), `pytest`, the coverage floor, plus the required-public-API presence
+check and no-TS-artifact check.
 
 Then `.upstreamer/eval.md` must return PASS or PASS WITH WARNINGS from a fresh
 review context before state advances.

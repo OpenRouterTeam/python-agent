@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, Dict, List
 
 import httpx
 from pydantic import BaseModel
@@ -11,42 +12,42 @@ from openrouter_agent.model_result import ModelResult
 from openrouter_agent.stop_conditions import is_stop_condition_met
 from openrouter_agent.tool_executor import apply_on_response_received_hooks, execute_tool
 from openrouter_agent.tool_types import ParsedToolCall
+from tests._fixtures import (
+    MemoryStateAccessor,
+    QueuedClient,
+    function_call_item,
+    make_response,
+    text_response,
+    tool_call_response,
+    usage_block,
+)
 
 
-class Responses:
-    def __init__(self) -> None:
-        self.requests = []
-
-    async def send_async(self, **kwargs):
-        self.requests.append(kwargs)
-        if len(self.requests) == 1:
-            return {
-                "id": "resp_tool",
-                "output": [
-                    {
-                        "type": "function_call",
-                        "id": "item_1",
-                        "callId": "call_1",
-                        "name": "double",
-                        "arguments": '{"value": 2}',
-                    }
-                ],
-                "usage": {"total_tokens": 5, "input_tokens": 2, "output_tokens": 3},
-            }
-        return {
-            "id": "resp_done",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}],
-        }
+def double_then_done() -> List[Dict[str, Any]]:
+    """One `double` tool call, then a terminal "done"."""
+    return [
+        tool_call_response(
+            "resp_tool",
+            "double",
+            call_id="call_1",
+            arguments='{"value": 2}',
+            usage=usage_block(total_tokens=5, input_tokens=2, output_tokens=3),
+        ),
+        text_response("resp_done", "done"),
+    ]
 
 
-class Beta:
-    def __init__(self) -> None:
-        self.responses = Responses()
+def pause_then_done(tool_name: str, pause_first: bool = True) -> List[Dict[str, Any]]:
+    """A pausing tool call (approval/HITL) followed by the terminal turn.
 
-
-class Client:
-    def __init__(self) -> None:
-        self.beta = Beta()
+    `pause_first=False` builds the resume client, whose only queued turn is the
+    completion -- so an unexpected extra request fails loudly.
+    """
+    turns: List[Dict[str, Any]] = []
+    if pause_first:
+        turns.append(tool_call_response(f"resp_{tool_name}", tool_name, call_id="call_1"))
+    turns.append(text_response("resp_done", "done"))
+    return turns
 
 
 async def test_max_tokens_used_matches_upstream_total_tokens_only() -> None:
@@ -57,26 +58,37 @@ async def test_max_tokens_used_matches_upstream_total_tokens_only() -> None:
 
 
 async def test_full_and_tool_streams_include_turn_and_tool_events() -> None:
-    client = Client()
+    client = QueuedClient(double_then_done())
     double = tool(name="double", input_schema=dict, execute=lambda params, ctx: {"value": params["value"] * 2})
     result = ModelResult(
         {"client": client, "request": {"model": "test", "input": "go", "tools": [double]}, "tools": [double]}
     )
 
     full_events = [event async for event in result.get_full_responses_stream()]
-    assert "turn.start" in [event["type"] for event in full_events]
-    assert "turn.end" in [event["type"] for event in full_events]
-    assert "tool.result" in [event["type"] for event in full_events]
-    assert "tool.call_output" in [event["type"] for event in full_events]
+    full_types = [event["type"] for event in full_events]
+    # Order and count, not membership: a membership check passes even when
+    # turn.end fires twice, never fires, or precedes turn.start. See
+    # tests/unit/test_turn_end_race_condition.py for why that matters here.
+    assert full_types.count("turn.start") == full_types.count("turn.end")
+    assert full_types.index("turn.start") < full_types.index("turn.end")
+    for expected in ("tool.result", "tool.call_output"):
+        assert full_types.count(expected) == 1, f"{expected}: {full_types}"
+    # The tool round's events land inside the turn that produced them.
+    assert full_types.index("turn.start") < full_types.index("tool.result")
 
     result2 = ModelResult(
-        {"client": Client(), "request": {"model": "test", "input": "go", "tools": [double]}, "tools": [double]}
+        {
+            "client": QueuedClient(double_then_done()),
+            "request": {"model": "test", "input": "go", "tools": [double]},
+            "tools": [double],
+        }
     )
     tool_events = [event async for event in result2.get_tool_stream()]
-    assert "turn.start" in [event["type"] for event in tool_events]
-    assert "turn.end" in [event["type"] for event in tool_events]
-    assert "tool_result" in [event["type"] for event in tool_events]
-    assert "tool_call_output" in [event["type"] for event in tool_events]
+    tool_types = [event["type"] for event in tool_events]
+    assert tool_types.count("turn.start") == tool_types.count("turn.end")
+    assert tool_types.index("turn.start") < tool_types.index("turn.end")
+    for expected in ("tool_result", "tool_call_output"):
+        assert tool_types.count(expected) == 1, f"{expected}: {tool_types}"
 
 
 async def test_generator_tool_emits_preliminary_event_before_completion() -> None:
@@ -197,49 +209,31 @@ async def test_hitl_on_response_received_only_applies_to_fresh_outputs() -> None
         },
     )
 
-    class StateAccessor:
-        async def load(self):
-            return state
+    accessor = MemoryStateAccessor()
+    accessor.stored = state
 
-        async def save(self, new_state):
-            self.saved = new_state
-
-    client = Client()
-    result = call_model(client, {"model": "test/model", "input": "next", "tools": [hitl], "state": StateAccessor()})
+    client = QueuedClient(double_then_done())
+    result = call_model(client, {"model": "test/model", "input": "next", "tools": [hitl], "state": accessor})
 
     await result.get_response()
     assert calls == []
 
 
 async def test_new_messages_stream_filters_unknown_manual_tool_calls() -> None:
-    class OneShotResponses:
-        async def send_async(self, **kwargs):
-            return {
-                "id": "resp_1",
-                "output": [
-                    {
-                        "type": "function_call",
-                        "id": "ghost_item",
-                        "callId": "ghost_call",
-                        "name": "ghost",
-                        "arguments": "{}",
-                    },
-                    {
-                        "type": "function_call",
-                        "id": "real_item",
-                        "callId": "real_call",
-                        "name": "real",
-                        "arguments": "{}",
-                    },
+    client = QueuedClient(
+        [
+            make_response(
+                "resp_1",
+                [
+                    function_call_item("ghost_call", "ghost"),
+                    function_call_item("real_call", "real"),
                 ],
-            }
-
-    class OneShotClient:
-        def __init__(self) -> None:
-            self.beta = type("Beta", (), {"responses": OneShotResponses()})()
+            )
+        ]
+    )
 
     real = tool(name="real", input_schema=dict, execute=False)
-    result = call_model(OneShotClient(), {"model": "test/model", "input": "call tools", "tools": [real]})
+    result = call_model(client, {"model": "test/model", "input": "call tools", "tools": [real]})
 
     messages = [item async for item in result.get_new_messages_stream()]
     assert [item["name"] for item in messages] == ["real"]
@@ -262,53 +256,8 @@ async def test_hitl_without_response_hook_validates_caller_output() -> None:
     assert "originalOutput" in rewritten[1]["output"]
 
 
-class MemoryState:
-    def __init__(self):
-        self.current = None
-        self.saved = []
-
-    async def load(self):
-        return self.current
-
-    async def save(self, new_state):
-        self.current = new_state
-        self.saved.append(new_state)
-
-
-class PauseThenDoneResponses:
-    def __init__(self, tool_name: str, pause_first: bool = True) -> None:
-        self.tool_name = tool_name
-        self.pause_first = pause_first
-        self.requests = []
-
-    async def send_async(self, **kwargs):
-        self.requests.append(kwargs)
-        if self.pause_first and len(self.requests) == 1:
-            return {
-                "id": f"resp_{self.tool_name}",
-                "output": [
-                    {
-                        "type": "function_call",
-                        "id": "item_1",
-                        "callId": "call_1",
-                        "name": self.tool_name,
-                        "arguments": "{}",
-                    }
-                ],
-            }
-        return {
-            "id": "resp_done",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}],
-        }
-
-
-class PauseClient:
-    def __init__(self, tool_name: str, pause_first: bool = True) -> None:
-        self.beta = type("Beta", (), {"responses": PauseThenDoneResponses(tool_name, pause_first)})()
-
-
 async def test_approval_pause_persists_tool_call_turn_and_resume_orders_output_after_call() -> None:
-    state = MemoryState()
+    state = MemoryStateAccessor()
     delete = tool(
         name="delete",
         input_schema=dict,
@@ -317,30 +266,31 @@ async def test_approval_pause_persists_tool_call_turn_and_resume_orders_output_a
         require_approval=True,
     )
 
-    first_client = PauseClient("delete")
+    first_client = QueuedClient(pause_then_done("delete"))
     first = call_model(first_client, {"model": "test", "input": "delete it", "tools": [delete], "state": state})
     await first.get_response()
 
-    paused = state.current
+    paused = state.stored
+    assert paused is not None
     assert paused.status == "awaiting_approval"
     assert paused.previous_response_id == "resp_delete"
     assert [item.get("type") for item in paused.messages][-1:] == ["function_call"]
 
-    resume_client = PauseClient("delete", pause_first=False)
+    resume_client = QueuedClient(pause_then_done("delete", pause_first=False))
     resumed = call_model(
         resume_client,
         {"model": "test", "input": [], "tools": [delete], "state": state, "approve_tool_calls": ["call_1"]},
     )
     await resumed.get_response()
 
-    sent_input = resume_client.beta.responses.requests[0]["input"]
+    sent_input = resume_client.requests[0]["input"]
     types = [item.get("type") for item in sent_input]
     assert types.index("function_call") < types.index("function_call_output")
     assert state.saved[-1].previous_response_id == "resp_done"
 
 
 async def test_hitl_pause_persists_tool_call_turn_and_resume_orders_output_after_call() -> None:
-    state = MemoryState()
+    state = MemoryStateAccessor()
     calls = 0
 
     def decide(params, ctx):
@@ -350,28 +300,32 @@ async def test_hitl_pause_persists_tool_call_turn_and_resume_orders_output_after
 
     approve = tool(name="approve", input_schema=dict, output_schema=dict, on_tool_called=decide)
 
-    first_client = PauseClient("approve")
+    first_client = QueuedClient(pause_then_done("approve"))
     first = call_model(first_client, {"model": "test", "input": "approve it", "tools": [approve], "state": state})
     await first.get_response()
 
-    paused = state.current
+    paused = state.stored
+    assert paused is not None
     assert paused.status == "awaiting_hitl"
     assert paused.previous_response_id == "resp_approve"
     assert [item.get("type") for item in paused.messages][-1:] == ["function_call"]
 
-    resume_client = PauseClient("approve", pause_first=False)
+    resume_client = QueuedClient(pause_then_done("approve", pause_first=False))
     resumed = call_model(
         resume_client,
         {"model": "test", "input": [], "tools": [approve], "state": state, "approve_tool_calls": ["call_1"]},
     )
     await resumed.get_response()
 
-    sent_input = resume_client.beta.responses.requests[0]["input"]
+    sent_input = resume_client.requests[0]["input"]
     types = [item.get("type") for item in sent_input]
     assert types.index("function_call") < types.index("function_call_output")
 
 
 async def test_model_result_tool_calls_stream_reconstructs_streamed_argument_deltas() -> None:
+    # Bespoke: this must yield an SSE *event* sequence, not a single result, so
+    # it cannot be a QueuedClient. Its terminal payload still uses the shared
+    # builders so it carries every required response field.
     class StreamResponses:
         async def send_async(self, **kwargs):
             async def events():
@@ -384,18 +338,7 @@ async def test_model_result_tool_calls_stream_reconstructs_streamed_argument_del
                 yield {"type": "response.function_call_arguments.done", "itemId": "item_1"}
                 yield {
                     "type": "response.completed",
-                    "response": {
-                        "id": "resp_stream",
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "id": "item_1",
-                                "callId": "call_1",
-                                "name": "lookup",
-                                "arguments": '{"q":"x"}',
-                            }
-                        ],
-                    },
+                    "response": tool_call_response("resp_stream", "lookup", call_id="call_1", arguments='{"q":"x"}'),
                 }
 
             return events()

@@ -4,6 +4,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# Coverage artifacts (CI writes coverage.xml; --cov writes .coverage)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 dist/
 build/
 *.egg-info/

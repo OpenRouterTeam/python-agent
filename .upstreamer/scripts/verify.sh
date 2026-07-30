@@ -21,13 +21,23 @@ run() {
 echo "=== Verification: python-agent ==="
 echo
 
+# Coverage ratchet. Must match --cov-fail-under in .github/workflows/ci.yaml.
+# Raise when coverage rises; never lower it to make a port run pass.
+COVERAGE_FLOOR=83
+
 echo "-- Toolchain"
 if command -v uv >/dev/null 2>&1; then
-  run "uv sync"        uv sync --all-extras
+  # --frozen: fail on uv.lock / pyproject.toml drift instead of silently
+  # resolving something other than what was reviewed.
+  run "uv sync"        uv sync --frozen --all-extras
+  run "lockfile in sync" uv lock --check
   run "ruff check"     uv run ruff check .
   run "ruff format"    uv run ruff format --check .
-  run "mypy"           uv run mypy src
-  run "pytest"         uv run pytest tests/unit -q
+  # tests included: a fake client or payload builder with an unchecked Optional
+  # deref is exactly how an assertion silently stops asserting.
+  run "mypy"           uv run mypy src tests
+  run "pytest + coverage floor ($COVERAGE_FLOOR%)" \
+      uv run pytest tests/unit -q --cov --cov-fail-under="$COVERAGE_FLOOR"
 else
   fail "uv not installed (required to build and test this package)"
 fi
@@ -80,6 +90,33 @@ else
   # Only present during a sync run. Standalone/CI invocations legitimately have no
   # upstream checkout; not a failure, but say so rather than passing silently.
   echo "  SKIP: no upstream checkout — version parity unchecked (declared $declared)"
+fi
+echo
+
+# The suite is what makes "a version behind on real behavior" visible or
+# invisible, so the file-level mapping is mechanically checked. Advisory: which
+# gaps are acceptable is a judgment call, and .upstreamer/eval.md makes it. This
+# just ensures nobody has to notice the gap on their own.
+echo "-- Test parity with upstream (advisory)"
+upstream_tests="tmp/upstreamer/upstream/packages/agent/tests/unit"
+if [ -d "$upstream_tests" ]; then
+  unported=""
+  for ts in "$upstream_tests"/*.test.ts; do
+    [ -e "$ts" ] || continue
+    base=$(basename "$ts" .test.ts | tr '-' '_')
+    [ -f "tests/unit/test_${base}.py" ] || unported="$unported ${base}"
+  done
+  if [ -z "${unported// /}" ]; then
+    pass "every upstream tests/unit file has a Python counterpart"
+  else
+    count=$(printf '%s' "$unported" | wc -w | tr -d ' ')
+    echo "  NOTE: $count upstream test file(s) have no tests/unit counterpart:"
+    for name in $unported; do echo "        $name.test.ts -> tests/unit/test_$name.py"; done
+    echo "        Not a mechanical failure — see the Test Parity section of"
+    echo "        .upstreamer/upstreamer.md and let the eval judge severity."
+  fi
+else
+  echo "  SKIP: no upstream checkout — test parity unchecked"
 fi
 echo
 

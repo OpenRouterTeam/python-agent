@@ -14,4 +14,6 @@ runs:
 
     - name: Sync dependencies
       shell: bash
-      run: uv sync --all-extras
+      # --frozen: fail on uv.lock / pyproject.toml drift rather than silently
+      # resolving something other than what was reviewed.
+      run: uv sync --frozen --all-extras

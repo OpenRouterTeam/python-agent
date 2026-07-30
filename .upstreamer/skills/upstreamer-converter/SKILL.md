@@ -78,13 +78,34 @@ substrate-pin section directs it.
 
 ## Step 4: Tests
 
-Ported behavior without a test proves nothing. For every behavioral change:
+Ported behavior without a test proves nothing — and upstream's own test suite is
+the most precise statement of the behavior contract that exists, so **upstream
+tests are part of the port**, not a follow-up.
 
-1. Add or update deterministic tests in this repo's existing test layout and style.
+Follow the `port-test-quality` skill at
+@.upstreamer/skills/port-test-quality/SKILL.md for the full procedure. It covers
+diffing the two suites by file, severity triage, the shared fixtures in
+`tests/_fixtures.py`, determinism rules, and the assertion patterns that are
+rejected. The binding rules are the **Test Parity** section of
+`.upstreamer/upstreamer.md`.
+
+The short version:
+
+1. Diff upstream's test files against `tests/` before writing anything, and
+   maintain the 1:1 mapping `foo-bar.test.ts` → `tests/unit/test_foo_bar.py`.
+   Report every upstream test file left unported, with its invariant and severity.
 2. Cover the specific upstream behavior that changed, not just the happy path.
    Upstream fixes are usually edge cases — that edge case is the test.
-3. Tests must pass without network access or paid credentials. Live/e2e tests
-   must skip cleanly when credentials are absent.
+3. Assert upstream behavior, not the port's own shape: order and count over
+   membership, exactly-once over "it ran", request counts where "no follow-up was
+   sent" is the invariant.
+4. Build payloads with `tests/_fixtures.py`; never hand-roll a partial response
+   dict or a new fake client.
+5. Tests must pass without network access or paid credentials, and be deterministic
+   — gate on `asyncio.Event`, never on `asyncio.sleep`. Live/e2e tests must skip
+   cleanly when credentials are absent.
+6. The coverage floor is a ratchet. Raise it when coverage rises; never lower it to
+   make a run pass.
 
 ## Step 5: Mechanical verification
 
