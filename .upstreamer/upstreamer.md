@@ -30,15 +30,37 @@ Explicitly out of scope:
 The port sits on the generated `openrouter` Python SDK and must not reimplement
 HTTP, auth, retries, or model schemas.
 
-- Target: `openrouter>=0.10.2` (current `pyproject.toml` pin).
+- Target: `openrouter>=1.1,<2` (current `pyproject.toml` pin).
 - `call_model` sends through `client.beta.responses.send_async` — the Responses
   API, matching upstream's Responses path. Do not switch to Chat Completions.
 
+The pin was moved from `>=0.10.2` to `>=1.1,<2` deliberately, in the PR that set
+this package up for PyPI publishing — not by a sync run. Two consequences worth
+knowing before touching it again:
+
+- **It forced the Python floor to 3.10.** Every `openrouter` 1.x release requires
+  Python `>=3.10` (the SDK dropped 3.9 at 1.0.0), so `requires-python` is now
+  `>=3.10`. Python 3.9 reached EOL in October 2025.
+- **The upper bound is load-bearing.** A 2.x could move the Responses API surface
+  this port binds to. `<2` means a new major cannot silently break installs.
+
 Do **not** bump the `openrouter` dependency on your own initiative. Upstream
-tracks `@openrouter/sdk`; the Python generated SDK moves independently and is
-currently at a much newer major. Crossing that boundary is a breaking change
-that needs its own PR. If an upstream change *requires* a newer `openrouter`,
-stop and report it as a blocker rather than bumping.
+tracks `@openrouter/sdk`; the Python generated SDK moves independently. Crossing
+a major boundary is a breaking change that needs its own PR, with the test suite
+and `mypy` verified against the new major first. If an upstream change *requires*
+a newer `openrouter`, stop and report it as a blocker rather than bumping.
+
+## Package Identity
+
+Fixed. A sync must not change any of these:
+
+| | Value | Why |
+|---|---|---|
+| PyPI distribution name | `openrouter-agent-sdk` | `openrouter-agent` is taken on PyPI by an unrelated third-party project. Do not "correct" the name to match upstream's `@openrouter/agent`. |
+| Import name | `openrouter_agent` | The import path is unaffected by the distribution name and stays aligned with upstream. A PyPI name differing from the import name is normal (`scikit-learn`/`sklearn`). |
+
+`[project.urls]` and `classifiers` are repo-owned publishing metadata, not port
+output. Leave them alone.
 
 ## Package Version
 
@@ -46,6 +68,10 @@ stop and report it as a blocker rather than bumping.
 from the upstream `packages/agent/package.json` at the target commit and set it
 to match. If the target commit is between releases, keep the last released
 version and note the drift in the final report.
+
+Publishing is gated on this: a released version can never be reused on PyPI, so a
+sync that bumps the version is what makes the next release possible. Never bump it
+past what was actually ported.
 
 ## Required Public API
 

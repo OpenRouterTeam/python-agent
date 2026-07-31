@@ -7,7 +7,7 @@ name: CI
 # src, coverage that cannot silently decay, and an installable wheel.
 #
 # Required checks (branch protection):
-#   check (py3.9) · check (py3.11) · check (py3.13) · types · build · verify-port
+#   check (py3.10) · check (py3.11) · check (py3.13) · types · build · verify-port
 # Deliberately NOT required: e2e — it exits 0 when the API key is absent (forks),
 # so requiring it would be a green rubber stamp.
 
@@ -24,23 +24,21 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # pyproject declares requires-python = ">=3.9.2", but CI used to test 3.11
-  # only, so a 3.9- or 3.13-specific break could land unnoticed. asyncio
+  # pyproject declares requires-python = ">=3.10", but CI used to test 3.11
+  # only, so a 3.10- or 3.13-specific break could land unnoticed. asyncio
   # primitives are the real hazard here: asyncio.Condition() binds the running
-  # loop eagerly on 3.9 and lazily on 3.13.
+  # loop eagerly on older versions and lazily on 3.13.
   check:
     name: check (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
-      # Do not let a 3.9-only failure mask a 3.13-only failure.
+      # Do not let a 3.10-only failure mask a 3.13-only failure.
       fail-fast: false
       matrix:
-        # "3.9" resolves to 3.9.25 and satisfies ">=3.9.2". The exact patch 3.9.2
-        # is NOT pinnable: actions/python-versions ships no 3.9.2 build for
-        # ubuntu-24.04 (16.04/18.04/20.04 only), so `python-version: "3.9.2"`
-        # fails to install on ubuntu-latest.
-        python-version: ["3.9", "3.11", "3.13"]
+        # 3.10 is the floor because `openrouter` 1.x requires >=3.10 (the SDK
+        # dropped 3.9 at 1.0.0). Python 3.9 reached EOL in October 2025.
+        python-version: ["3.10", "3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -103,7 +101,7 @@ jobs:
       # tests/ included on purpose: CI used to check src only, so every fake
       # client and payload builder in tests/ was unverified — exactly where an
       # Optional deref makes an assertion silently no-op. Not matrixed because
-      # [tool.mypy] python_version = "3.9" pins the analysis target, so the
+      # [tool.mypy] python_version = "3.10" pins the analysis target, so the
       # output is identical on every interpreter.
       - name: Type check
         run: uv run mypy src tests
@@ -117,10 +115,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # Built on the oldest supported interpreter so a wheel that only imports
-      # on newer syntax fails here rather than for a user on 3.9.
+      # on newer syntax fails here rather than for a user on 3.10.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.10"
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -138,7 +136,7 @@ jobs:
           uv run --isolated --no-project --with "$wheel" python -c "
           from openrouter_agent import call_model, OpenRouter, tool, ModelResult
           import importlib.metadata as md
-          print('imported openrouter-agent', md.version('openrouter-agent'))"
+          print('imported openrouter-agent-sdk', md.version('openrouter-agent-sdk'))"
 
       - uses: actions/upload-artifact@v4
         with:
