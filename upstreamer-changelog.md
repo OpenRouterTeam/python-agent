@@ -1,18 +1,19 @@
 # openrouter-agent-sdk Changelog
 
-## 0.0.1 — first PyPI release
+## 0.8.0 — first PyPI release
 
-First published release under the `openrouter-agent-sdk` name. The version starts
-at `0.0.1` because the PyPI project is new; it is **not** tied to the ported
-`@openrouter/agent` version, which is recorded in `.upstreamer/state.yaml` as
-`upstream_agent_version` (currently 0.8.0). The library surface is the full 0.8.0
-port described below.
+First published release. The version is `0.8.0`, not `0.0.1`, because this
+package's version tracks the ported `@openrouter/agent` version — so a release
+states plainly which upstream version it is a port of. The library surface is the
+0.8.0 port described under *Packaged surface* below.
 
-- **The PyPI distribution is now `openrouter-agent-sdk`.** The import is unchanged (`from openrouter_agent import ...`). `openrouter-agent` on PyPI belongs to an unrelated third-party project, so it was never available to this package; the rename is what makes publishing possible. A distribution name differing from the import name is normal (`scikit-learn`/`sklearn`).
-- **Requires Python 3.10+**, and depends on **`openrouter>=1.1,<2`**. These move together: every `openrouter` 1.x release requires Python 3.10 or newer — the SDK dropped 3.9 at 1.0.0. Python 3.9 reached EOL in October 2025, and since this is the first published release there is no earlier version to fall back to on 3.9.
+### Packaging
+
+- **The PyPI distribution is `openrouter-agent-sdk`.** The import is unchanged (`from openrouter_agent import ...`). `openrouter-agent` on PyPI belongs to an unrelated third-party project, so it was never available to this package; the rename is what makes publishing possible. A distribution name differing from the import name is normal (`scikit-learn`/`sklearn`).
+- **Requires Python 3.10+**, and depends on **`openrouter>=1.1,<2`**. These move together: every `openrouter` 1.x release requires Python 3.10 or newer — the SDK dropped 3.9 at 1.0.0. Python 3.9 reached EOL in October 2025, and as the first published release there is no earlier version to fall back to on 3.9.
 - Added repository/issues/changelog URLs and trove classifiers to the package metadata, and stopped shipping the port tooling (`.upstreamer/`, `.github/`, `scripts/upstream`) inside the sdist.
 
-## 0.8.0 Sync
+### Packaged surface (the 0.8.0 sync)
 
 - **Lifecycle hooks system** (the headline feature of this release): `HooksManager`, `HookName`, `HookEntry`, and nine built-in lifecycle hooks — `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PermissionRequest`, `SessionStart`, `SessionEnd`, and `PostModelCall`. Pass a `HooksManager` instance, or an inline `{hook_name: [HookEntry(...)]}` dict of built-in hooks, via `hooks=` on `call_model`.
   - `PreToolUse` can block a tool call or mutate its input before execution; `PermissionRequest` can pre-empt the approval gate with `allow`/`deny`/`ask_user`; `UserPromptSubmit` can reject or rewrite the user's prompt before the first request goes out; `Stop` can force the loop past a `stop_when` hit (as a zero-cost in-memory retry, no extra model request) and inject a follow-up prompt.

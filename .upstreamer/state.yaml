@@ -8,10 +8,3 @@
 # tolerance, and MCP tool-result source discrimination.
 # Only scripts/upstream runs should change this.
 upstream_commit: 680bceb4598f228d3e2ec58e2416e4335cdff059
-
-# The @openrouter/agent version at that commit. This — not pyproject.toml
-# `version` — is what the verifier checks against upstream's package.json, so
-# version honesty survives the PyPI distribution version being independent (the
-# published package starts at 0.0.1 under a new name). A sync must update this
-# alongside upstream_commit.
-upstream_agent_version: 0.8.0

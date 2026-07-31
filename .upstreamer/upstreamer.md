@@ -64,26 +64,14 @@ output. Leave them alone.
 
 ## Package Version
 
-Two independent numbers. Do not collapse them.
+`pyproject.toml` `version` tracks the ported `@openrouter/agent` version. Read it
+from the upstream `packages/agent/package.json` at the target commit and set it
+to match. If the target commit is between releases, keep the last released
+version and note the drift in the final report.
 
-| Where | What | Who changes it |
-|---|---|---|
-| `.upstreamer/state.yaml` `upstream_agent_version` | The `@openrouter/agent` version actually ported. Read from upstream `packages/agent/package.json` at the target commit. | **A sync must update this alongside `upstream_commit`.** The verifier checks it against upstream. |
-| `pyproject.toml` `version` | The PyPI distribution version of `openrouter-agent-sdk`. | Humans, at release time. A sync must **not** touch it. |
-
-They were the same field until the package was prepared for PyPI. They had to
-split: `openrouter-agent-sdk` is a brand-new project on PyPI and starts at
-`0.0.1`, so tying the distribution version to upstream's `0.8.0` would advertise a
-release history that does not exist — and would burn every version number between.
-
-Version honesty still has teeth. The verifier compares
-`upstream_agent_version` against upstream's `package.json` and **fails** if it
-drifts or is missing, so a port cannot record a version it did not achieve. If the
-target commit is between releases, keep the last released version there and note
-the drift in the final report.
-
-Publishing is gated on the distribution version: a released version can never be
-reused on PyPI, even after a yank.
+Publishing is gated on this: a released version can never be reused on PyPI, so a
+sync that bumps the version is what makes the next release possible. Never bump it
+past what was actually ported.
 
 ## Required Public API
 
