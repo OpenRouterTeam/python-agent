@@ -108,6 +108,44 @@ This is a load-bearing SDK port behind a strict parity eval — use a strong cod
 model. `OPENCODE_MODEL` overrides the `model:` field in the contract, so you can
 change models without a code change.
 
+## Releasing to PyPI
+
+The distribution is **`openrouter-agent-sdk`**; the import stays
+`openrouter_agent`. The obvious name `openrouter-agent` is taken on PyPI by an
+unrelated third-party project, so a sync must not "correct" it — see the Package
+Identity table in `.upstreamer/upstreamer.md`.
+
+`.github/workflows/publish.yaml` is manual-only (`workflow_dispatch`), defaults to
+a dry run, and uses PyPI **trusted publishing (OIDC)** — no API token is stored in
+this repo.
+
+```
+1. Land the version bump in pyproject.toml (a port sync does this).
+2. Run Publish with target=testpypi to rehearse.
+3. Run with target=pypi, dry-run=true — read the summary.
+4. Run with target=pypi, dry-run=false to release.
+```
+
+Before the first real publish, two things must be set up by hand — the workflow
+cannot do them for you:
+
+1. **On PyPI**: add a GitHub trusted publisher (owner `OpenRouterTeam`, repo
+   `python-agent`, workflow `publish.yaml`, environment `pypi`). If the project
+   does not exist yet, add it as a *pending* publisher.
+2. **In repo Settings**: create the `pypi` and `testpypi` environments and set each
+   one's deployment branch policy to `main`.
+
+That branch policy is the real ref restriction. PyPI's trusted publisher pins
+owner/repo/workflow/environment but carries no branch claim, and
+`workflow_dispatch` runs the workflow file from whatever ref is selected — so the
+in-file `if:` guard stops accidents, while the environment policy is what actually
+binds publishing to `main`.
+
+Publishing is irreversible: a version can never be reused on PyPI, even after a
+yank. The workflow re-runs `verify.sh`, checks metadata with `twine check
+--strict`, imports the built wheel in isolation, and refuses to upload a version
+that already exists on the target index.
+
 ## Reviewing a port PR
 
 Review it as a *port*, not a normal diff:

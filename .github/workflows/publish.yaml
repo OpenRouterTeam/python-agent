@@ -1,0 +1,193 @@
+name: Publish
+
+# Publishes `openrouter-agent-sdk` to PyPI using trusted publishing (OIDC) — no
+# long-lived API token is stored in this repo.
+#
+# Publishing is irreversible: a version number can never be reused on PyPI, even
+# after a yank. So this workflow is manual-only, defaults to a dry run, and
+# refuses to publish a version that already exists on the index.
+#
+# Release procedure:
+#   1. Land the version bump (pyproject.toml `version`). For a port sync that is
+#      done by scripts/upstream; otherwise edit it in a PR.
+#   2. Run this workflow with target=testpypi to rehearse (optional but cheap).
+#   3. Run with target=pypi, dry-run=true, and read the summary.
+#   4. Run with target=pypi, dry-run=false to release.
+#
+# One-time setup on PyPI, before the first real publish — the workflow cannot do
+# this for you:
+#   PyPI → the project (or "pending publisher" if it does not exist yet) →
+#   Publishing → add a GitHub trusted publisher with
+#     owner: OpenRouterTeam   repo: python-agent
+#     workflow: publish.yaml  environment: pypi
+#   Then create the `pypi` (and `testpypi`) environment in repo Settings, and set
+#   its deployment branch policy to `main`.
+#
+# That environment branch policy is the real ref restriction. The `if:` guard
+# below stops accidents, not a determined actor: workflow_dispatch runs the
+# workflow file from the selected ref, so a branch whose copy drops the guard
+# would ignore it. PyPI's trusted publisher pins owner/repo/workflow/environment
+# and carries no branch claim, so the environment policy is what actually binds
+# publishing to main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to publish to. Rehearse on testpypi first."
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+      dry-run:
+        description: "Build and verify, but do not upload. Leave enabled until you have read the summary."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Selects the trusted-publisher identity and, via its deployment branch
+    # policy, restricts which refs may publish. A dry run still targets the
+    # environment so an approval gate is exercised in rehearsal too.
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: read
+      id-token: write # OIDC token exchange for trusted publishing
+    # Real publishes only from main; dry runs allowed anywhere so a PR branch can
+    # verify the artifact without ever reaching the upload step.
+    if: github.ref == 'refs/heads/main' || inputs.dry-run
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --all-extras
+
+      # A broken release is worse than a late one, so re-run the gate here rather
+      # than trusting that CI passed on some earlier commit. This is the same
+      # script that gates the port sync.
+      - name: Verify (lint, types, tests, coverage floor, required API)
+        run: ./.upstreamer/scripts/verify.sh
+
+      - name: Build sdist and wheel
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          uv build --out-dir dist
+          ls -l dist
+
+      # Catches the metadata problems PyPI rejects on upload — a malformed
+      # long_description is the classic one, and it fails *after* the version is
+      # burned if you find out at upload time.
+      - name: Check metadata renders for PyPI
+        run: uv run --with twine twine check --strict dist/*
+
+      # Proves the artifact, not the source tree: installs the built wheel with
+      # the repo off sys.path.
+      - name: Import the public API from the built wheel
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv run --isolated --no-project --with "$wheel" python -c "
+          from openrouter_agent import call_model, OpenRouter, tool, ModelResult
+          import importlib.metadata as md
+          print('imported openrouter-agent-sdk', md.version('openrouter-agent-sdk'))"
+
+      # PyPI rejects a re-upload of an existing version with a 400. Failing here
+      # instead makes the cause obvious ("you forgot to bump") and keeps the
+      # error out of the upload step.
+      - name: Confirm this version is not already published
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(uv run python -c "import importlib.metadata as m; print(m.version('openrouter-agent-sdk'))")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.target }}" = "pypi" ]; then
+            INDEX="https://pypi.org/pypi/openrouter-agent-sdk/json"
+          else
+            INDEX="https://test.pypi.org/pypi/openrouter-agent-sdk/json"
+          fi
+          # Collision test done in Python, not by word-splitting a shell string:
+          # the shell form is subtly non-portable (zsh does not split unquoted
+          # variables the way bash does), and a guard that silently stops
+          # matching is worse than no guard — it would wave through the exact
+          # re-upload it exists to catch. Exit 2 = already published.
+          if curl -fsSL "$INDEX" -o /tmp/index.json 2>/dev/null; then
+            python3 - "$VERSION" <<'PY'
+          import json, sys
+          version = sys.argv[1]
+          releases = json.load(open("/tmp/index.json")).get("releases", {})
+          print("already published:", " ".join(sorted(releases)) or "<none>")
+          sys.exit(2 if version in releases else 0)
+          PY
+            status=$?
+            if [ "$status" -eq 2 ]; then
+              echo "::error::Version $VERSION is already published on ${{ inputs.target }}. A PyPI version can never be reused — bump the version in pyproject.toml."
+              exit 1
+            elif [ "$status" -ne 0 ]; then
+              echo "::error::Could not determine published versions (exit $status). Refusing to publish blind."
+              exit 1
+            fi
+          else
+            echo "Project not on ${{ inputs.target }} yet — this would be the first release."
+          fi
+          echo "Version $VERSION is publishable on ${{ inputs.target }}."
+
+      - name: Summary
+        run: |
+          {
+            echo "## Publish ${{ inputs.target }}"
+            echo
+            echo "- Version: \`${{ steps.version.outputs.version }}\`"
+            echo "- Dry run: **${{ inputs.dry-run }}**"
+            echo "- Ref: \`${{ github.ref }}\`"
+            echo
+            if [ "${{ inputs.dry-run }}" = "true" ]; then
+              echo "Nothing was uploaded. Artifacts were built and verified only."
+              echo "Re-run with dry-run disabled to publish."
+            else
+              echo "Uploading to ${{ inputs.target }}."
+            fi
+            echo
+            echo '```'
+            ls -l dist
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Keep the artifacts from a dry run so the exact files that would ship can
+      # be downloaded and inspected.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.target }}-${{ steps.version.outputs.version }}
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi' && inputs.dry-run == false
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+
+      - name: Publish to PyPI
+        if: inputs.target == 'pypi' && inputs.dry-run == false
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true

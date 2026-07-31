@@ -3,18 +3,44 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "openrouter-agent"
+name = "openrouter-agent-sdk"
 version = "0.8.0"
 description = "Python port of @openrouter/agent: OpenRouter tool orchestration, streaming, state, and format compatibility."
 readme = "README.md"
-requires-python = ">=3.9.2"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "OpenRouter" }]
 keywords = ["openrouter", "agent", "python", "tools", "streaming", "llm"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
-  "openrouter>=0.10.2",
+  # The generated OpenRouter Python SDK. This package does not reimplement HTTP,
+  # auth, retries, or model schemas — see the substrate pin in
+  # .upstreamer/upstreamer.md. Upper bound because a 2.x could move the
+  # Responses API surface this port binds to.
+  "openrouter>=1.1,<2",
   "pydantic>=2.11.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenRouterTeam/python-agent"
+Repository = "https://github.com/OpenRouterTeam/python-agent"
+Issues = "https://github.com/OpenRouterTeam/python-agent/issues"
+Changelog = "https://github.com/OpenRouterTeam/python-agent/blob/main/upstreamer-changelog.md"
+"Upstream (TypeScript)" = "https://github.com/OpenRouterTeam/typescript-agent"
 
 [project.optional-dependencies]
 dev = [
@@ -28,9 +54,25 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrouter_agent"]
 
+# The sdist otherwise carries the whole porting apparatus (.upstreamer/,
+# .github/, opencode.json, scripts/upstream). None of it is useful to a
+# consumer building from source, and shipping the contract and eval prompts in a
+# published artifact invites confusion about what the package *is*. Keep the
+# source, tests, and license so the sdist stays buildable and auditable.
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/openrouter_agent",
+  "tests",
+  "README.md",
+  "PORTING.md",
+  "LICENSE",
+  "pyproject.toml",
+  "upstreamer-changelog.md",
+]
+
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -69,7 +111,7 @@ omit = [
 ]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 check_untyped_defs = true
 warn_unused_ignores = false
 allow_redefinition = true

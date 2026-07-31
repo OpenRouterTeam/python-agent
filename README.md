@@ -1,6 +1,6 @@
-# openrouter-agent
+# openrouter-agent-sdk
 
-`openrouter-agent` is a Python agent toolkit for OpenRouter. It ports the public behavior of `@openrouter/agent` into an async-first Python package: Responses API calls, client and server tools, streaming consumption, multi-turn state, approval and human-in-the-loop gates, tool context, stop conditions, and Claude/OpenAI Chat format compatibility.
+`openrouter-agent-sdk` is a Python agent toolkit for OpenRouter. It ports the public behavior of `@openrouter/agent` into an async-first Python package: Responses API calls, client and server tools, streaming consumption, multi-turn state, approval and human-in-the-loop gates, tool context, stop conditions, and Claude/OpenAI Chat format compatibility.
 
 This package builds on the official `openrouter` Python SDK. It does not reimplement HTTP, auth, retries, or model schemas; `call_model` sends requests through `client.beta.responses.send_async`, the same Responses API surface used by the TypeScript package.
 
@@ -10,10 +10,18 @@ This package builds on the official `openrouter` Python SDK. It does not reimple
 ## Install
 
 ```bash
-pip install openrouter-agent
+pip install openrouter-agent-sdk
 # or
-uv add openrouter-agent
+uv add openrouter-agent-sdk
 ```
+
+The distribution is `openrouter-agent-sdk`; the import is `openrouter_agent`:
+
+```python
+from openrouter_agent import call_model, tool
+```
+
+Requires Python 3.10+ (the `openrouter` SDK dropped 3.9 at 1.0.0).
 
 ## Quick Start
 
@@ -211,7 +219,7 @@ Tests share fixtures from `tests/_fixtures.py` — `make_response`,
 `make_response` populates every field the real Responses API returns, so a stub
 cannot be more permissive than production.
 
-CI runs the suite on Python 3.9, 3.11, and 3.13, type-checks `src` and `tests`,
+CI runs the suite on Python 3.10, 3.11, and 3.13, type-checks `src` and `tests`,
 enforces a coverage floor, and verifies the built wheel imports in isolation.
 Because this package is a port, tests are held to upstream behavior — see the
 Test Parity section of `.upstreamer/upstreamer.md` and [PORTING.md](PORTING.md).
