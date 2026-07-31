@@ -4,7 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openrouter-agent-sdk"
-version = "0.8.0"
+# Distribution version. Independent of the ported @openrouter/agent version,
+# which is recorded in .upstreamer/state.yaml as `upstream_agent_version` —
+# starting a brand-new PyPI project at 0.8.0 would imply a release history that
+# does not exist. See the Package Version section of .upstreamer/upstreamer.md.
+version = "0.0.1"
 description = "Python port of @openrouter/agent: OpenRouter tool orchestration, streaming, state, and format compatibility."
 readme = "README.md"
 requires-python = ">=3.10"

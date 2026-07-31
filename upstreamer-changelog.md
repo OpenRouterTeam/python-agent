@@ -1,9 +1,15 @@
 # openrouter-agent-sdk Changelog
 
-## Unreleased — packaging
+## 0.0.1 — first PyPI release
+
+First published release under the `openrouter-agent-sdk` name. The version starts
+at `0.0.1` because the PyPI project is new; it is **not** tied to the ported
+`@openrouter/agent` version, which is recorded in `.upstreamer/state.yaml` as
+`upstream_agent_version` (currently 0.8.0). The library surface is the full 0.8.0
+port described below.
 
 - **The PyPI distribution is now `openrouter-agent-sdk`.** The import is unchanged (`from openrouter_agent import ...`). `openrouter-agent` on PyPI belongs to an unrelated third-party project, so it was never available to this package; the rename is what makes publishing possible. A distribution name differing from the import name is normal (`scikit-learn`/`sklearn`).
-- **Requires Python 3.10+** (was 3.9.2+), and **`openrouter>=1.1,<2`** (was `>=0.10.2`). These move together: every `openrouter` 1.x release requires Python 3.10 or newer — the SDK dropped 3.9 at 1.0.0. Python 3.9 reached EOL in October 2025. If you are on Python 3.9, stay on an earlier release of this package.
+- **Requires Python 3.10+**, and depends on **`openrouter>=1.1,<2`**. These move together: every `openrouter` 1.x release requires Python 3.10 or newer — the SDK dropped 3.9 at 1.0.0. Python 3.9 reached EOL in October 2025, and since this is the first published release there is no earlier version to fall back to on 3.9.
 - Added repository/issues/changelog URLs and trove classifiers to the package metadata, and stopped shipping the port tooling (`.upstreamer/`, `.github/`, `scripts/upstream`) inside the sdist.
 
 ## 0.8.0 Sync

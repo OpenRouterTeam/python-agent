@@ -73,8 +73,13 @@ must not be rewritten by a port run unless the contract explicitly says to:
 - `scripts/upstream`
 - Release/publish configuration and package identity (name, module path)
 
-Package **version** and dependency pins change only where the contract's
-substrate-pin section directs it.
+Dependency pins change only where the contract's substrate-pin section directs it.
+
+**Do not touch `pyproject.toml` `version`.** It is the PyPI distribution version
+and is independent of the ported upstream version. Record what you ported in
+`.upstreamer/state.yaml` as `upstream_agent_version` instead — that is the field
+the verifier checks against upstream's `package.json`. See the contract's Package
+Version table.
 
 ## Step 4: Tests
 
@@ -115,10 +120,10 @@ Run the verifier and fix what it reports:
 .upstreamer/scripts/verify.sh
 ```
 
-It checks objective facts: toolchain build, lint, type check, tests, required
-public API symbols present, no upstream-language artifacts leaked, declared
-version consistent with the ported upstream version. A verifier failure is never
-acceptable to hand off.
+It checks objective facts: toolchain build, lint, type check, tests, coverage
+floor, required public API symbols present, no upstream-language artifacts leaked,
+and `state.yaml`'s `upstream_agent_version` consistent with upstream's
+`package.json`. A verifier failure is never acceptable to hand off.
 
 ## Step 6: Qualitative parity eval
 

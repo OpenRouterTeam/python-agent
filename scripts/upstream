@@ -185,8 +185,11 @@ Treat @$contract as binding. Then:
 4. Run the qualitative parity eval at @$eval_file in a FRESH subagent or separate review context that reads the upstream reference and this repo directly, not your own prior reasoning. Write the result to @$eval_report_file.
 5. Fix violations and re-run. Do not paper over a real parity gap.
 
-Only after the verifier passes AND the eval returns PASS or PASS WITH WARNINGS, update @$state_file with:
+Only after the verifier passes AND the eval returns PASS or PASS WITH WARNINGS, update @$state_file with BOTH fields:
 upstream_commit: $target_commit
+upstream_agent_version: <the "version" from packages/agent/package.json at $target_commit>
+
+Do NOT change the \`version\` field in pyproject.toml. That is the PyPI distribution version of openrouter-agent-sdk and is deliberately independent of the ported @openrouter/agent version — see the Package Version table in @$contract. The verifier checks upstream_agent_version, not pyproject.toml, so omitting it fails the run.
 
 If the eval still fails after three focused fix attempts, or no coherent fix exists within the contract, declare bankruptcy: do NOT update @$state_file, write the failure, attempted fixes, and recommended human action to @$eval_report_file, and say clearly in the final report that the eval failed. A stale state file is the correct outcome for a failed port; it makes the next run retry.
 

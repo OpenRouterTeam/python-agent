@@ -76,20 +76,36 @@ PY
 fi
 echo
 
+# Version honesty. Two independent numbers, deliberately:
+#
+#   pyproject.toml `version`            — the PyPI distribution version. Starts at
+#                                         0.0.1; the project is new on PyPI under
+#                                         the openrouter-agent-sdk name.
+#   state.yaml `upstream_agent_version` — the @openrouter/agent version actually
+#                                         ported. THIS is what must match upstream.
+#
+# Checking the distribution version against upstream would force a brand-new PyPI
+# project to claim 0.8.0. Dropping the check instead would lose the thing it
+# exists for: catching a port that records a version it did not achieve.
 echo "-- Version consistency"
 declared=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+state_file=".upstreamer/state.yaml"
+recorded=$(grep -m1 '^upstream_agent_version:' "$state_file" 2>/dev/null | sed 's/^upstream_agent_version:[[:space:]]*//' | tr -d '"'"'"' ')
 upstream_pkg="tmp/upstreamer/upstream/packages/agent/package.json"
-if [ -f "$upstream_pkg" ]; then
+echo "  INFO: distribution version $declared (independent of upstream)"
+if [ -z "$recorded" ]; then
+  fail "state.yaml is missing upstream_agent_version — cannot verify which @openrouter/agent version was ported"
+elif [ -f "$upstream_pkg" ]; then
   target=$(grep -m1 '"version"' "$upstream_pkg" | sed 's/.*"version": *"\([^"]*\)".*/\1/')
-  if [ "$declared" = "$target" ]; then
-    pass "version $declared matches ported @openrouter/agent $target"
+  if [ "$recorded" = "$target" ]; then
+    pass "ported @openrouter/agent $recorded matches upstream package.json"
   else
-    fail "version drift: pyproject.toml=$declared, upstream @openrouter/agent=$target"
+    fail "version drift: state.yaml upstream_agent_version=$recorded, upstream @openrouter/agent=$target"
   fi
 else
   # Only present during a sync run. Standalone/CI invocations legitimately have no
   # upstream checkout; not a failure, but say so rather than passing silently.
-  echo "  SKIP: no upstream checkout — version parity unchecked (declared $declared)"
+  echo "  SKIP: no upstream checkout — ported version ($recorded) unverified against upstream"
 fi
 echo
 

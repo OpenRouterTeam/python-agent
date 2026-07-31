@@ -51,9 +51,13 @@ version behind on real behavior. That failure mode is the one to catch.
 **Public API completeness.** Every symbol in the contract's Required Public API
 list is present, exported, and reachable from the package's public entry point.
 
-**Version honesty.** The port's declared/recorded upstream version matches what
-was actually ported. A port claiming 0.8.0 while missing `HooksManager` is a FAIL,
-not a warning.
+**Version honesty.** Check `upstream_agent_version` in `.upstreamer/state.yaml` —
+**not** `pyproject.toml` `version`, which is the independent PyPI distribution
+version of `openrouter-agent-sdk` and is deliberately unrelated (see the contract's
+Package Version table). The recorded upstream version must match what was actually
+ported: recording 0.8.0 while missing `HooksManager` is a FAIL, not a warning. A
+sync that advances `upstream_commit` without advancing `upstream_agent_version` is
+also a finding.
 
 **The load-bearing loop.** Tool execution, multi-turn continuation, and stop
 conditions behave as upstream: correct request sequence, accumulated input and
