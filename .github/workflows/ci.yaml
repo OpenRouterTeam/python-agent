@@ -136,7 +136,7 @@ jobs:
           uv run --isolated --no-project --with "$wheel" python -c "
           from openrouter_agent import call_model, OpenRouter, tool, ModelResult
           import importlib.metadata as md
-          print('imported openrouter-agent', md.version('openrouter-agent'))"
+          print('imported openrouter-agent-sdk', md.version('openrouter-agent-sdk'))"
 
       - uses: actions/upload-artifact@v4
         with:
