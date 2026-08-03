@@ -9,27 +9,58 @@ listed in the Idiomatic Divergences section of `.upstreamer/upstreamer.md`.
 
 ## How it works
 
+The port tracks upstream's **default-branch HEAD**, not the latest published npm
+release.
+
 ```
-typescript-agent publishes @openrouter/agent to npm
-        │
-        │  repository_dispatch: openrouter-agent-published
+   weekly cron  ·  publish dispatch  ·  manual dispatch
+        │              (a nudge,          (optional
+        │               not a ref)         explicit ref)
         ▼
 .github/workflows/upstreamer-port.yaml
-        │
+        │  resolve ref: explicit input, else upstream HEAD
         ▼
 scripts/upstream
         │  1. fetch upstream, resolve target commit
-        │  2. compare against .upstreamer/state.yaml — skip if unchanged
-        │  3. opencode runs the port against .upstreamer/upstreamer.md
-        │  4. .upstreamer/scripts/verify.sh   (mechanical gate)
-        │  5. .upstreamer/eval.md            (parity gate, fresh context)
-        │  6. advance state.yaml — ONLY if both gates pass
+        │  2. REFUSE if target is behind state.yaml (would revert work)
+        │  3. compare against .upstreamer/state.yaml — skip if unchanged
+        │  4. opencode runs the port against .upstreamer/upstreamer.md
+        │  5. .upstreamer/scripts/verify.sh   (mechanical gate)
+        │  6. .upstreamer/eval.md            (parity gate, fresh context)
+        │  7. advance state.yaml — ONLY if both gates pass
         ▼
     Pull request  (never a direct push to main)
 ```
 
-A weekly cron backs up the dispatch in case one is missed, and
-`workflow_dispatch` allows a manual run against any ref.
+### Why HEAD and not the latest release
+
+Release tracking sounds more conservative and is worse in practice. Upstream can
+sit for weeks with large unreleased work on `main` — doom-loop detection (#73) was
+~7,500 lines, ~4,700 of it tests, and rewrote a big part of `model-result.ts`. A
+release-tracking port stays blind to that, then absorbs the entire delta in one
+automated run touching the most load-bearing module in the package. Tracking HEAD
+keeps each delta small enough that a human can actually review it.
+
+Two consequences follow, and both are handled rather than ignored:
+
+**The port is routinely ahead of the latest release.** So a release ref is now
+*dangerous*: it resolves to an ancestor of what is already ported, and the
+converter would faithfully "port" the older tree, reverting landed work.
+`scripts/upstream` refuses a target that is behind `state.yaml` (exit 3) unless
+`--force` is given, and the workflow ignores the publish dispatch's
+`client_payload.ref` for the same reason.
+
+**Its declared version legitimately lags upstream's `package.json`.** Being ahead
+of a release means carrying commits upstream has not versioned yet, while
+`package.json` still shows the last released number. The verifier reports how many
+commits ahead the ported tree is and warns not to publish that version to PyPI —
+shipping unreleased upstream work under a released version number is a
+misrepresentation, and a PyPI version can never be reused. Publish from a commit
+level with a release tag.
+
+The weekly cron is the primary trigger. The publish dispatch still fires on a new
+npm release — useful as "something shipped, sync promptly" — but it syncs to HEAD
+like everything else. `workflow_dispatch` allows a manual run against any ref.
 
 ## The contract is the product
 

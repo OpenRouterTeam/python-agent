@@ -87,6 +87,41 @@ jobs:
       - name: Verify (lint, types, tests, coverage floor, required API)
         run: ./.upstreamer/scripts/verify.sh
 
+      # The port tracks upstream HEAD, so it is routinely AHEAD of the release
+      # whose version number pyproject.toml carries. Publishing from that state
+      # would ship unreleased upstream work as a released version — permanently,
+      # since a PyPI version can never be reused.
+      #
+      # verify.sh reports this, but only when a sync run has left an upstream
+      # checkout in tmp/. There is none here, so check it explicitly against the
+      # public repo rather than letting the guard be silent at the one moment it
+      # matters most.
+      - name: Refuse to publish a version the port is ahead of
+        run: |
+          set -euo pipefail
+          VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
+          PORTED="$(grep -m1 '^upstream_commit:' .upstreamer/state.yaml | awk '{print $2}')"
+          echo "declared version: $VERSION"
+          echo "ported commit:    $PORTED"
+
+          rm -rf /tmp/upstream-check
+          git clone -q --filter=blob:none --no-checkout \
+            https://github.com/OpenRouterTeam/typescript-agent.git /tmp/upstream-check
+          git -C /tmp/upstream-check fetch -q --tags origin
+
+          TAG="@openrouter/agent@${VERSION}"
+          if ! git -C /tmp/upstream-check rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Upstream has no release tag $TAG. This package's version tracks the ported @openrouter/agent version, so publishing $VERSION means upstream released it. Wait for the upstream release, or correct the version."
+            exit 1
+          fi
+
+          AHEAD="$(git -C /tmp/upstream-check rev-list --count "refs/tags/$TAG..$PORTED" 2>/dev/null || echo 0)"
+          if [ "${AHEAD:-0}" -gt 0 ]; then
+            echo "::error::The ported commit is $AHEAD commit(s) ahead of the $TAG release tag. Publishing $VERSION now would ship unreleased upstream work under a released version number, and a PyPI version can never be reused. Publish from a commit level with a release tag, or wait for upstream to release what the port has reached."
+            exit 1
+          fi
+          echo "Ported tree is level with $TAG — $VERSION is honest to publish."
+
       - name: Build sdist and wheel
         run: |
           set -euo pipefail

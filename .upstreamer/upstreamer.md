@@ -65,13 +65,24 @@ output. Leave them alone.
 ## Package Version
 
 `pyproject.toml` `version` tracks the ported `@openrouter/agent` version. Read it
-from the upstream `packages/agent/package.json` at the target commit and set it
-to match. If the target commit is between releases, keep the last released
-version and note the drift in the final report.
+from the upstream `packages/agent/package.json` at the target commit and set it to
+match. Never set it past what was actually ported.
 
-Publishing is gated on this: a released version can never be reused on PyPI, so a
-sync that bumps the version is what makes the next release possible. Never bump it
-past what was actually ported.
+**This port targets upstream HEAD, so between-releases is the normal state, not the
+exception.** `package.json` on `main` still carries the last released number, so
+matching it is correct and the verifier passes — but the ported tree then contains
+commits upstream has not released. When that is the case:
+
+- Keep `version` at the number `package.json` shows. Do not invent a
+  pre-release suffix; the verifier compares against `package.json` exactly.
+- **Say so in the final report**: how many commits ahead of the release tag the
+  target is, and what unreleased upstream work is now included. The verifier
+  prints this as a `NOTE`, but the report is what a reviewer reads.
+
+Publishing is gated on this. A released version can never be reused on PyPI, so
+publishing `X.Y.Z` from a tree that is ahead of upstream's `X.Y.Z` tag ships
+unreleased work under a released number, permanently. Release from a commit level
+with a release tag, or after upstream publishes the version the port has reached.
 
 ## Required Public API
 

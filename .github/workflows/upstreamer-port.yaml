@@ -1,10 +1,27 @@
 name: Upstreamer Port
 
-# Ports @openrouter/agent into this repo. Two triggers:
-#   1. repository_dispatch from typescript-agent's publish.yaml on a new npm release
-#      (event type: openrouter-agent-published) — the intended path. Ports track
-#      published releases, not every commit to upstream main.
-#   2. Weekly cron as a safety net for missed dispatches, plus manual dispatch.
+# Ports @openrouter/agent into this repo.
+#
+# The port tracks upstream's **default-branch HEAD**, not the latest published npm
+# release. Release tracking sounds safer but produces exactly the failure this
+# pipeline exists to prevent: upstream can sit for weeks with large unreleased
+# work on main (doom-loop detection, #73, was ~7.5k lines) and the port stays
+# blind to it, then absorbs the whole delta in one automated run touching the most
+# load-bearing modules. Tracking HEAD keeps each delta small enough to review.
+#
+# Consequence to keep in mind: the port is then routinely AHEAD of the latest
+# release, so its declared version legitimately lags upstream's package.json. The
+# verifier reports that rather than failing, and publishing is gated on it — see
+# the Package Version section of .upstreamer/upstreamer.md.
+#
+# Three triggers, all resolving to HEAD unless given an explicit ref:
+#   1. Weekly cron — the primary path now that releases are not the trigger.
+#   2. repository_dispatch from typescript-agent's publish.yaml on a new npm
+#      release. Still useful as a "something just shipped, sync promptly" nudge,
+#      but it no longer pins the ref to that release tag: doing so would port
+#      BACKWARDS once the port is ahead of the release. scripts/upstream refuses
+#      an ancestor ref outright.
+#   3. Manual dispatch, optionally with an explicit ref.
 #
 # Opens a PR. Never pushes to main. A failed parity eval leaves
 # .upstreamer/state.yaml unchanged, so the next run retries the same delta.
@@ -52,21 +69,29 @@ jobs:
       - name: Set up language toolchain
         uses: ./.github/actions/port-toolchain
 
-      # Ports track published releases, not upstream main. When no ref arrives
-      # (cron, or a manual dispatch with the input left blank), resolve the
-      # latest published @openrouter/agent version from the public npm registry
-      # and port its release tag. This makes the cron fully equivalent to the
-      # repository_dispatch fast path — same tag either way — so the pipeline
-      # works with no cross-repo token at all if the dispatch is unavailable.
+      # Blank ref = upstream default-branch HEAD, which scripts/upstream resolves
+      # itself. That is the normal case for both the cron and a publish dispatch.
+      #
+      # Only an EXPLICIT manual `ref` input is honored. The publish dispatch's
+      # client_payload.ref is deliberately ignored: it carries the release tag,
+      # which is an ancestor of HEAD once the port is ahead of the release, so
+      # honoring it would revert landed work. The dispatch still does its real
+      # job — waking the pipeline promptly after a release — it just syncs to HEAD
+      # like every other trigger. (scripts/upstream also refuses an ancestor ref
+      # outright, so this is defense in depth, not the only guard.)
       - name: Resolve target ref
         id: target
         run: |
           set -euo pipefail
-          REF="${{ inputs.ref || github.event.client_payload.ref }}"
-          if [ -z "$REF" ]; then
-            VERSION="$(curl -fsSL 'https://registry.npmjs.org/@openrouter%2Fagent/latest' | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
-            REF="@openrouter/agent@${VERSION}"
-            echo "No ref provided — resolved latest npm release: $REF"
+          REF="${{ inputs.ref }}"
+          if [ -n "$REF" ]; then
+            echo "Explicit ref requested: $REF"
+          else
+            PAYLOAD_REF="${{ github.event.client_payload.ref }}"
+            if [ -n "$PAYLOAD_REF" ]; then
+              echo "::notice::Ignoring dispatch payload ref '$PAYLOAD_REF' — this port tracks upstream HEAD, and a release tag is an ancestor once the port is ahead of it. Syncing to HEAD instead."
+            fi
+            echo "No explicit ref — porting upstream default-branch HEAD."
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
@@ -84,9 +109,14 @@ jobs:
             echo "::error::OPENROUTER_API_KEY secret is not set. See .upstreamer/port.env.example."
             exit 1
           fi
-          args=(--ref "${{ steps.target.outputs.ref }}")
+          # Only pass --ref when there is actually a ref. `--ref ""` is not the
+          # same as omitting it: the arg parser consumes the empty value and the
+          # script would target an empty ref instead of defaulting to HEAD.
+          args=()
+          REF="${{ steps.target.outputs.ref }}"
+          [ -n "$REF" ] && args+=(--ref "$REF")
           [ "${{ inputs.force }}" = "true" ] && args+=(--force)
-          ./scripts/upstream "${args[@]}"
+          ./scripts/upstream ${args[@]+"${args[@]}"}
 
       - name: Check for changes
         id: diff
