@@ -142,12 +142,40 @@ jobs:
             echo "passed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Mint a GitHub App installation token so the PR is created by the App
+      # rather than by the native GITHUB_TOKEN.
+      #
+      # Why this exists: GitHub does not trigger workflows from events created
+      # with GITHUB_TOKEN (recursion guard), so a PR opened with it gets no
+      # pull_request-event checks — and `main`'s required status checks are
+      # satisfied ONLY by pull_request-event runs. Measured on PR #24: the commit
+      # had 14 check-runs, the PR's rollup showed 7; the workflow_dispatch half was
+      # invisible to branch protection. So the previous "dispatch ci.yaml
+      # explicitly" workaround produced green runs that could never satisfy the
+      # required checks, leaving an automated port PR permanently unmergeable.
+      #
+      # An App installation token is not recursion-guarded, so the PR gets real
+      # pull_request checks. Preferred over a PAT: scoped to this repo, not tied to
+      # a person's account, and independently revocable.
+      #
+      # Optional by design — see the fallback below.
+      - name: Mint App token
+        id: app-token
+        if: steps.diff.outputs.changed == 'true' && vars.PORT_BOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.PORT_BOT_APP_ID }}
+          private-key: ${{ secrets.PORT_BOT_PRIVATE_KEY }}
+
       - name: Open PR
         id: open-pr
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # App token when configured; GITHUB_TOKEN otherwise. With the fallback
+          # the PR still opens, but its checks will not attach — the guard step
+          # below says so loudly rather than leaving a silently stuck PR.
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           branch: upstreamer/sync
           delete-branch: true
           title: >-
@@ -172,16 +200,23 @@ jobs:
             `.upstreamer/state.yaml` did not advance, the eval did not pass and this
             PR must not be merged as-is.
 
-      # Events created with the native GITHUB_TOKEN deliberately do not trigger
-      # other workflows (GitHub's recursion guard), so the PR opened above gets
-      # no CI checks on its own. workflow_dispatch is exempt from that guard:
-      # kick ci.yaml at the PR branch explicitly. This keeps the whole pipeline
-      # on the native token — no PAT anywhere in this repo.
-      - name: Trigger CI on the port PR
-        if: steps.diff.outputs.changed == 'true' && steps.open-pr.outputs.pull-request-operation != 'none'
+      # Fallback path only. With the App configured, the PR above already has real
+      # pull_request checks and nothing here runs.
+      #
+      # Without it, the PR exists but can never satisfy `main`'s required checks.
+      # Dispatching ci.yaml still gives a human something to read, but the run does
+      # NOT attach to the PR — so say that plainly instead of leaving a green-looking
+      # PR that will not merge and no explanation of why.
+      - name: Trigger CI on the port PR (no App token — checks will not attach)
+        if: >-
+          steps.diff.outputs.changed == 'true'
+          && steps.open-pr.outputs.pull-request-operation != 'none'
+          && steps.app-token.outputs.token == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref upstreamer/sync
+        run: |
+          echo "::warning::PORT_BOT_APP_ID / PORT_BOT_PRIVATE_KEY are not configured, so this PR was opened with GITHUB_TOKEN and will receive NO pull_request-event checks. main's required status checks cannot be satisfied, so the PR cannot merge as-is. The dispatched run below is informational only. Configure the App (see PORTING.md) or close and reopen the PR by hand to generate real checks."
+          gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref upstreamer/sync
 
       - name: Upload logs
         if: always()

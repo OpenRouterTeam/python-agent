@@ -29,7 +29,8 @@ scripts/upstream
         │  6. .upstreamer/eval.md            (parity gate, fresh context)
         │  7. advance state.yaml — ONLY if both gates pass
         ▼
-    Pull request  (never a direct push to main)
+    Pull request, opened by the GitHub App so it gets real
+    pull_request-event CI checks  (never a direct push to main)
 ```
 
 ### Why HEAD and not the latest release
@@ -131,6 +132,42 @@ Two values, same names locally and in CI:
 |------|-------|------|
 | `OPENROUTER_API_KEY` | local: `.upstreamer/port.env` · CI: repo **secret** | `sk-or-…` key opencode uses for inference |
 | `OPENCODE_MODEL` | local: `.upstreamer/port.env` · CI: repo **variable** | e.g. `openrouter/~anthropic/claude-opus-latest` |
+
+Two more are needed in CI only, for the bot that opens port PRs:
+
+| Name | Kind | What |
+|------|------|------|
+| `PORT_BOT_APP_ID` | repo **variable** | The GitHub App's App ID |
+| `PORT_BOT_PRIVATE_KEY` | repo **secret** | The App's generated private key (full PEM, including the BEGIN/END lines) |
+
+### Why a GitHub App is required, not optional
+
+`main` requires six status checks, and **only `pull_request`-event runs satisfy
+them**. GitHub does not trigger workflows from events created with the native
+`GITHUB_TOKEN` (its recursion guard), so a PR opened with that token gets no
+`pull_request` checks and can never become mergeable.
+
+Measured on PR #24: the commit carried **14 check-runs, while the PR's rollup
+showed 7** — a `workflow_dispatch` run of the same workflow on the same commit was
+completely invisible to branch protection. That is why "just dispatch `ci.yaml`
+at the branch" does not work; it produces green runs that cannot satisfy anything.
+
+An App installation token is not recursion-guarded, so the PR it opens gets real
+checks. Preferred over a PAT: scoped to this repo, not tied to anyone's personal
+account, and revocable on its own.
+
+**Setup** — create a GitHub App (org Settings → Developer settings → GitHub Apps):
+
+- Repository permissions: **Contents: Read and write**, **Pull requests: Read and
+  write**. Nothing else.
+- Install it on `OpenRouterTeam/python-agent`.
+- Generate a private key, then add `PORT_BOT_APP_ID` (variable) and
+  `PORT_BOT_PRIVATE_KEY` (secret).
+
+Until those exist the pipeline still runs and still opens a PR, but emits a
+`::warning::` saying the PR will receive no checks and cannot merge as-is. That is
+deliberate — an unconfigured bot should degrade loudly, not look healthy while
+producing permanently stuck PRs.
 
 The wrapper writes the key into `~/.local/share/opencode/auth.json` so headless
 runs work without the interactive `opencode /connect` flow.
