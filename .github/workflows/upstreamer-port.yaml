@@ -56,6 +56,13 @@ jobs:
   port:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    env:
+      # Surfaced as env because the `secrets` context is NOT available in a
+      # step-level `if:` (only github/needs/strategy/matrix/job/runner/env/vars/
+      # steps/inputs are). Referencing secrets.* there evaluates to empty and the
+      # condition silently never matches — so the App-token gate below tests this
+      # variable instead. Only ever compared against '' ; never echoed.
+      HAS_APP_KEY: ${{ secrets.PORT_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -161,7 +168,15 @@ jobs:
       # Optional by design — see the fallback below.
       - name: Mint App token
         id: app-token
-        if: steps.diff.outputs.changed == 'true' && vars.PORT_BOT_APP_ID != ''
+        # Gate on BOTH halves. Gating on the App ID alone is a trap: the ID is a
+        # variable and the key is a secret, so they are added in separate places
+        # and one routinely lands first (it did here — the ID arrived first). With
+        # only the ID set, this step would run and fail on the missing key, turning
+        # a working fallback into a broken pipeline — worse than no App at all.
+        if: >-
+          steps.diff.outputs.changed == 'true'
+          && vars.PORT_BOT_APP_ID != ''
+          && env.HAS_APP_KEY == 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ vars.PORT_BOT_APP_ID }}
