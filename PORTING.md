@@ -189,10 +189,18 @@ this repo.
 
 ```
 1. Land the version bump in pyproject.toml (a port sync does this).
-2. Run Publish with target=testpypi to rehearse.
-3. Run with target=pypi, dry-run=true — read the summary.
-4. Run with target=pypi, dry-run=false to release.
+2. Run Publish with dry-run=true — read the summary.
+3. Run with dry-run=false to release.
 ```
+
+There is deliberately **no TestPyPI rehearsal**. TestPyPI is a separate site with
+its own account and its own trusted-publisher config, so it needed a second
+registration; with only the pypi.org one in place the rehearsal failed with
+`invalid-publisher` while the real path was fine. A rehearsal that fails for
+reasons the real run would not is worse than no rehearsal. The dry run covers what
+it was actually for — verify, build, `twine check --strict`, isolated wheel import,
+and the already-published and ahead-of-release guards — everything except the
+upload itself.
 
 Before the first real publish, two things must be set up by hand — the workflow
 cannot do them for you:
@@ -200,8 +208,8 @@ cannot do them for you:
 1. **On PyPI**: add a GitHub trusted publisher (owner `OpenRouterTeam`, repo
    `python-agent`, workflow `publish.yaml`, environment `pypi`). If the project
    does not exist yet, add it as a *pending* publisher.
-2. **In repo Settings**: create the `pypi` and `testpypi` environments and set each
-   one's deployment branch policy to `main`.
+2. **In repo Settings**: create the `pypi` environment and set its deployment
+   branch policy to `main`.
 
 That branch policy is the real ref restriction. PyPI's trusted publisher pins
 owner/repo/workflow/environment but carries no branch claim, and

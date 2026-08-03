@@ -10,9 +10,16 @@ name: Publish
 # Release procedure:
 #   1. Land the version bump (pyproject.toml `version`). For a port sync that is
 #      done by scripts/upstream; otherwise edit it in a PR.
-#   2. Run this workflow with target=testpypi to rehearse (optional but cheap).
-#   3. Run with target=pypi, dry-run=true, and read the summary.
-#   4. Run with target=pypi, dry-run=false to release.
+#   2. Run with dry-run=true and read the summary.
+#   3. Run with dry-run=false to release.
+#
+# There is deliberately no TestPyPI target. It required a second, separate
+# trusted-publisher registration on test.pypi.org (its own site, own account, own
+# publisher config), and having only the pypi.org one configured meant the
+# rehearsal failed with `invalid-publisher` while the real path was fine — a
+# rehearsal that fails for reasons the real run would not have is worse than no
+# rehearsal. The dry run below covers what the rehearsal was actually for:
+# everything except the upload itself.
 #
 # One-time setup on PyPI, before the first real publish — the workflow cannot do
 # this for you:
@@ -20,8 +27,8 @@ name: Publish
 #   Publishing → add a GitHub trusted publisher with
 #     owner: OpenRouterTeam   repo: python-agent
 #     workflow: publish.yaml  environment: pypi
-#   Then create the `pypi` (and `testpypi`) environment in repo Settings, and set
-#   its deployment branch policy to `main`.
+#   Then create the `pypi` environment in repo Settings and set its deployment
+#   branch policy to `main`.
 #
 # That environment branch policy is the real ref restriction. The `if:` guard
 # below stops accidents, not a determined actor: workflow_dispatch runs the
@@ -33,14 +40,6 @@ name: Publish
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: "Index to publish to. Rehearse on testpypi first."
-        required: true
-        type: choice
-        options:
-          - testpypi
-          - pypi
-        default: testpypi
       dry-run:
         description: "Build and verify, but do not upload. Leave enabled until you have read the summary."
         required: false
@@ -51,7 +50,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-${{ inputs.target }}
+  group: publish
   cancel-in-progress: false
 
 jobs:
@@ -61,7 +60,7 @@ jobs:
     # Selects the trusted-publisher identity and, via its deployment branch
     # policy, restricts which refs may publish. A dry run still targets the
     # environment so an approval gate is exercised in rehearsal too.
-    environment: ${{ inputs.target }}
+    environment: pypi
     permissions:
       contents: read
       id-token: write # OIDC token exchange for trusted publishing
@@ -155,11 +154,7 @@ jobs:
           set -euo pipefail
           VERSION="$(uv run python -c "import importlib.metadata as m; print(m.version('openrouter-agent-sdk'))")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.target }}" = "pypi" ]; then
-            INDEX="https://pypi.org/pypi/openrouter-agent-sdk/json"
-          else
-            INDEX="https://test.pypi.org/pypi/openrouter-agent-sdk/json"
-          fi
+          INDEX="https://pypi.org/pypi/openrouter-agent-sdk/json"
           # Collision test done in Python, not by word-splitting a shell string:
           # the shell form is subtly non-portable (zsh does not split unquoted
           # variables the way bash does), and a guard that silently stops
@@ -175,21 +170,21 @@ jobs:
           PY
             status=$?
             if [ "$status" -eq 2 ]; then
-              echo "::error::Version $VERSION is already published on ${{ inputs.target }}. A PyPI version can never be reused — bump the version in pyproject.toml."
+              echo "::error::Version $VERSION is already published on PyPI. A version can never be reused — bump the version in pyproject.toml."
               exit 1
             elif [ "$status" -ne 0 ]; then
               echo "::error::Could not determine published versions (exit $status). Refusing to publish blind."
               exit 1
             fi
           else
-            echo "Project not on ${{ inputs.target }} yet — this would be the first release."
+            echo "Project not on PyPI yet — this would be the first release."
           fi
-          echo "Version $VERSION is publishable on ${{ inputs.target }}."
+          echo "Version $VERSION is publishable on PyPI."
 
       - name: Summary
         run: |
           {
-            echo "## Publish ${{ inputs.target }}"
+            echo "## Publish to PyPI"
             echo
             echo "- Version: \`${{ steps.version.outputs.version }}\`"
             echo "- Dry run: **${{ inputs.dry-run }}**"
@@ -199,7 +194,7 @@ jobs:
               echo "Nothing was uploaded. Artifacts were built and verified only."
               echo "Re-run with dry-run disabled to publish."
             else
-              echo "Uploading to ${{ inputs.target }}."
+              echo "Uploading to PyPI."
             fi
             echo
             echo '```'
@@ -211,18 +206,11 @@ jobs:
       # be downloaded and inspected.
       - uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ inputs.target }}-${{ steps.version.outputs.version }}
+          name: dist-${{ steps.version.outputs.version }}
           path: dist/
 
-      - name: Publish to TestPyPI
-        if: inputs.target == 'testpypi' && inputs.dry-run == false
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          print-hash: true
-
       - name: Publish to PyPI
-        if: inputs.target == 'pypi' && inputs.dry-run == false
+        if: inputs.dry-run == false
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           print-hash: true
