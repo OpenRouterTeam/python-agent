@@ -77,6 +77,12 @@ include = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+# tmp/ is the port pipeline's scratch space (upstream checkout, probe scripts a
+# sync run writes while exploring). It is gitignored, but ruff still walks it, so
+# a stray scratch file there fails the verifier on grounds unrelated to the port.
+# Ruff honors .gitignore for untracked files but not for an explicitly-walked
+# directory, so exclude it outright.
+extend-exclude = ["tmp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

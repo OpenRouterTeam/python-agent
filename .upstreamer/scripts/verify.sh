@@ -86,6 +86,30 @@ if [ -f "$upstream_pkg" ]; then
   else
     fail "version drift: pyproject.toml=$declared, upstream @openrouter/agent=$target"
   fi
+
+  # This port tracks upstream HEAD, so it routinely contains work that upstream
+  # has not released. package.json still carries the last released number, so the
+  # check above passes — and the port would publish "0.8.0" while containing
+  # post-0.8.0 commits. Not a verifier failure (being ahead is the intended
+  # state), but it must be visible, because publishing it as a released version
+  # number is a real misrepresentation and PyPI versions cannot be reused.
+  upstream_git="tmp/upstreamer/upstream"
+  if [ -d "$upstream_git/.git" ]; then
+    ported_sha="$(git -C "$upstream_git" rev-parse HEAD 2>/dev/null || true)"
+    rel_tag="$(git -C "$upstream_git" tag -l "@openrouter/agent@$target" | head -1)"
+    if [ -n "$ported_sha" ] && [ -n "$rel_tag" ]; then
+      ahead="$(git -C "$upstream_git" rev-list --count "$rel_tag^{commit}..$ported_sha" 2>/dev/null || echo 0)"
+      if [ "${ahead:-0}" -gt 0 ]; then
+        echo "  NOTE: ported tree is $ahead commit(s) ahead of the $target release tag."
+        echo "        Declaring $declared is correct for the port, but do NOT publish"
+        echo "        $declared to PyPI from this state — it would ship unreleased"
+        echo "        upstream work under a released version number. Publish only from"
+        echo "        a commit level with a release tag, or after upstream releases."
+      else
+        pass "ported tree is level with the $target release tag (publishable)"
+      fi
+    fi
+  fi
 else
   # Only present during a sync run. Standalone/CI invocations legitimately have no
   # upstream checkout; not a failure, but say so rather than passing silently.
