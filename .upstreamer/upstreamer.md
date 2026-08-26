@@ -196,6 +196,11 @@ Deliberate and permanent. Do not converge these toward TypeScript.
    matching symbol (e.g. `BeforeCreateRequestContext` / `BeforeCreateRequestHook`
    until the generated SDK exposes them natively). Bind to real generated symbols
    as soon as they exist.
+7. **User-agent wrapper identity is language-specific.** Python appends the
+   PyPI distribution name (`openrouter-agent-sdk`), while TypeScript appends the
+   npm package name (`@openrouter/agent`) and Go appends the module path
+   (`github.com/OpenRouterTeam/go-agent`). Porting must not convert this token
+   to the TypeScript literal.
 
 ## Output Shape
 
