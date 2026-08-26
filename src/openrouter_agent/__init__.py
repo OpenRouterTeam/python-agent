@@ -39,7 +39,6 @@ from openrouter.components import (
     OpenResponsesResult,
     OutputFileSearchCallItem,
     OutputFunctionCallItem,
-    OutputImage,
     OutputImageGenerationCallItem,
     OutputItems,
     OutputMessage,
@@ -234,6 +233,21 @@ class BeforeCreateRequestContext(Protocol):
 class BeforeCreateRequestHook(Protocol):
     def before_create_request(self, hook_ctx: BeforeCreateRequestContext, request: Any) -> Any: ...
 
+
+# openrouter 1.1.40 renamed OutputImage to CodeInterpreterImageOutput with no
+# back-compat alias, and this package's constraint (openrouter>=1.1,<2) spans
+# both. The two models are structurally identical (type, url) and this package
+# only re-exports the type, so bind whichever name the installed SDK provides
+# to keep OutputImage / OutputInputImage stable for consumers.
+# Both ignores are load-bearing across the range, not just today: mypy resolves
+# against the locked SDK, so exactly one of these two imports is unresolvable at
+# any given pin, and which one flips when the lock crosses 1.1.40.
+try:
+    from openrouter.components import OutputImage  # type: ignore[attr-defined]
+except ImportError:  # openrouter >= 1.1.40
+    from openrouter.components import (  # type: ignore[assignment, no-redef]
+        CodeInterpreterImageOutput as OutputImage,
+    )
 
 OutputInputImage = OutputImage
 
