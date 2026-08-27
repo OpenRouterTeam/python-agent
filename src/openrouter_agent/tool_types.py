@@ -24,6 +24,8 @@ class ParsedToolCall:
     id: str
     name: str
     arguments: Any
+    # Prevent PreToolUse from running twice after an approval resume.
+    pre_tool_use_applied: Optional[bool] = None
 
 
 @dataclass(frozen=True)

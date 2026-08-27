@@ -493,7 +493,7 @@ class ModelResult:
             return {"type": "parse_error", "call": call, "error_message": error_message}
 
         effective_call = call
-        if self._hooks:
+        if self._hooks and call.pre_tool_use_applied is not True:
             original_input = call.arguments if isinstance(call.arguments, dict) else {}
             pre = await self._hooks.emit(
                 "PreToolUse",
@@ -542,6 +542,118 @@ class ModelResult:
                 )
 
         return {"type": "execution", "call": effective_call, "result": result}
+
+    async def _prepare_tool_calls_for_approval(
+        self,
+        calls: Sequence[ParsedToolCall],
+        tools: Sequence[Tool],
+    ) -> Tuple[List[ParsedToolCall], List[UnsentToolResult]]:
+        """Apply PreToolUse once before approval classification."""
+        prepared: List[ParsedToolCall] = []
+        blocked: List[UnsentToolResult] = []
+        for call in calls:
+            tool = self._find_tool(call.name, tools)
+            if (
+                not self._hooks
+                or call.pre_tool_use_applied is True
+                or isinstance(call.arguments, str)
+                or not tool
+                or not is_auto_resolvable_tool(tool)
+            ):
+                prepared.append(call)
+                continue
+
+            original_input = call.arguments if isinstance(call.arguments, dict) else {}
+            pre = await self._hooks.emit(
+                "PreToolUse",
+                {"tool_name": call.name, "tool_input": original_input},
+                tool_name=call.name,
+                session_id=self._session_id,
+            )
+            if pre.blocked:
+                block = next((result.get("block") for result in pre.results if result.get("block")), None)
+                reason = block if isinstance(block, str) else "Blocked by PreToolUse hook"
+                blocked.append(create_rejected_result(call.id, call.name, reason))
+                continue
+
+            arguments = pre.final_payload.get("tool_input") if pre.mutated else call.arguments
+            prepared.append(dataclasses.replace(call, arguments=arguments, pre_tool_use_applied=True))
+
+        return prepared, blocked
+
+    async def _resolve_approval_gate(
+        self,
+        calls: Sequence[ParsedToolCall],
+        tools: Sequence[Tool],
+        turn_context: Mapping[str, Any],
+    ) -> Tuple[List[ParsedToolCall], List[ParsedToolCall], List[UnsentToolResult]]:
+        """Return pending calls, executable calls, and resolved rejection results."""
+        prepared, resolved_results = await self._prepare_tool_calls_for_approval(calls, tools)
+        partition = await partition_tool_calls(
+            prepared,
+            tools,
+            turn_context,
+            self.options.get("require_approval"),
+        )
+        needs_approval = list(partition["requires_approval"])
+        pending: List[ParsedToolCall] = []
+        allowed_occurrences: set[int] = set()
+        denied_occurrences: set[int] = set()
+
+        if needs_approval and self._hooks:
+            for call in needs_approval:
+                decision, reason = await self._emit_permission_request(call, tools)
+                if decision == "allow":
+                    allowed_occurrences.add(id(call))
+                elif decision == "deny":
+                    denied_occurrences.add(id(call))
+                    resolved_results.append(
+                        create_rejected_result(call.id, call.name, reason or "Denied by PermissionRequest hook")
+                    )
+                else:
+                    pending.append(call)
+        else:
+            pending.extend(needs_approval)
+
+        pending_occurrences = {id(call) for call in pending}
+        auto_execute_occurrences = {id(call) for call in partition["auto_execute"]}
+        executable = [
+            call
+            for call in prepared
+            if id(call) not in pending_occurrences
+            and id(call) not in denied_occurrences
+            and (id(call) in allowed_occurrences or id(call) in auto_execute_occurrences)
+        ]
+        return pending, executable, resolved_results
+
+    async def _execute_calls_to_unsent_results(
+        self,
+        calls: Sequence[ParsedToolCall],
+        tools: Sequence[Tool],
+        turn_context: Mapping[str, Any],
+    ) -> List[UnsentToolResult]:
+        """Execute and persist auto-resolvable calls before an approval pause."""
+        results: List[UnsentToolResult] = []
+        for call in calls:
+            tool = self._find_tool(call.name, tools)
+            if not tool or not is_auto_resolvable_tool(tool):
+                continue
+            outcome = await self._run_tool_with_hooks(tool, call, {**turn_context, "tool_call": call})
+            if outcome["type"] == "parse_error":
+                results.append(create_rejected_result(call.id, call.name, outcome["error_message"]))
+            elif outcome["type"] == "hook_blocked":
+                results.append(create_rejected_result(call.id, call.name, outcome["reason"]))
+            elif outcome["result"] is None:
+                # HITL tools cannot produce an unsent result until resumed.
+                continue
+            elif outcome["result"].get("error") is not None:
+                results.append(create_rejected_result(call.id, call.name, str(outcome["result"]["error"])))
+            else:
+                effective_call = outcome["call"]
+                results.append(
+                    create_unsent_result(effective_call.id, effective_call.name, outcome["result"].get("result"))
+                )
+        return results
 
     async def _record_preliminary(self, call_id: str, value: Any) -> None:
         await self._append_event(
@@ -714,9 +826,32 @@ class ModelResult:
                     final_response_enabled = allow_final_response is not False
                     resolvable_pending = [c for c in calls if self._call_is_auto_resolvable(c, tools)]
                     if final_response_enabled and resolvable_pending:
-                        final_outputs: List[Any] = []
                         turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
-                        for call in calls:
+                        requires_approval, executable_calls, gate_results = await self._resolve_approval_gate(
+                            calls, tools, turn_context
+                        )
+                        if requires_approval:
+                            if self.options.get("state") is None:
+                                names = ", ".join(call.name for call in requires_approval)
+                                raise ValueError(
+                                    f"Tool(s) require approval but no state accessor is configured: {names}"
+                                )
+                            gate_results.extend(
+                                await self._execute_calls_to_unsent_results(executable_calls, tools, turn_context)
+                            )
+                            await self._save_state(
+                                pending_tool_calls=requires_approval,
+                                unsent_tool_results=gate_results or None,
+                                status="awaiting_approval",
+                            )
+                            self._final_response = final_response
+                            return final_response
+
+                        final_outputs: List[Any] = unsent_results_to_api_format(gate_results)
+                        resolved_gate_ids = {result.call_id for result in gate_results}
+                        for call in executable_calls:
+                            if call.id in resolved_gate_ids:
+                                continue
                             matching_tool = self._find_tool(call.name, tools)
                             if matching_tool and is_auto_resolvable_tool(matching_tool):
                                 outcome = await self._run_tool_with_hooks(matching_tool, call, turn_context)
@@ -756,59 +891,20 @@ class ModelResult:
                         continue
                     break
 
-                partition = await partition_tool_calls(
-                    calls, tools, {"number_of_turns": turn_number + 1}, self.options.get("require_approval")
+                turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
+                requires_approval, executable_calls, hook_resolved_unsent = await self._resolve_approval_gate(
+                    calls,
+                    tools,
+                    turn_context,
                 )
-                requires_approval = list(partition["requires_approval"])
-                hook_resolved_unsent: List[UnsentToolResult] = []
-                if requires_approval and hooks:
-                    still_pending: List[ParsedToolCall] = []
-                    for call in requires_approval:
-                        decision, reason = await self._emit_permission_request(call, tools)
-                        if decision == "allow":
-                            promo_tool = self._find_tool(call.name, tools)
-                            if promo_tool and is_auto_resolvable_tool(promo_tool):
-                                outcome = await self._run_tool_with_hooks(
-                                    promo_tool,
-                                    call,
-                                    {
-                                        "number_of_turns": turn_number + 1,
-                                        "tool_call": call,
-                                        "turn_request": current_request,
-                                    },
-                                )
-                                if outcome["type"] == "parse_error":
-                                    hook_resolved_unsent.append(
-                                        create_rejected_result(call.id, call.name, outcome["error_message"])
-                                    )
-                                elif outcome["type"] == "hook_blocked":
-                                    hook_resolved_unsent.append(
-                                        create_rejected_result(call.id, call.name, outcome["reason"])
-                                    )
-                                elif outcome["result"] is None:
-                                    still_pending.append(call)
-                                elif outcome["result"].get("error") is not None:
-                                    hook_resolved_unsent.append(
-                                        create_rejected_result(call.id, call.name, str(outcome["result"]["error"]))
-                                    )
-                                else:
-                                    hook_resolved_unsent.append(
-                                        create_unsent_result(call.id, call.name, outcome["result"].get("result"))
-                                    )
-                            else:
-                                still_pending.append(call)
-                        elif decision == "deny":
-                            hook_resolved_unsent.append(
-                                create_rejected_result(call.id, call.name, reason or "Denied by PermissionRequest hook")
-                            )
-                        else:
-                            still_pending.append(call)
-                    requires_approval = still_pending
 
                 if requires_approval:
                     if self.options.get("state") is None:
                         names = ", ".join(call.name for call in requires_approval)
                         raise ValueError(f"Tool(s) require approval but no state accessor is configured: {names}")
+                    hook_resolved_unsent.extend(
+                        await self._execute_calls_to_unsent_results(executable_calls, tools, turn_context)
+                    )
                     save_kwargs: Dict[str, Any] = {
                         "pending_tool_calls": requires_approval,
                         "status": "awaiting_approval",
@@ -822,7 +918,7 @@ class ModelResult:
                 outputs: List[Any] = unsent_results_to_api_format(hook_resolved_unsent) if hook_resolved_unsent else []
                 paused: List[ParsedToolCall] = []
                 executed_calls: List[ParsedToolCall] = []
-                for call in partition["auto_execute"]:
+                for call in executable_calls:
                     tool = self._find_tool(call.name, tools)
                     if not tool or not is_auto_resolvable_tool(tool):
                         continue

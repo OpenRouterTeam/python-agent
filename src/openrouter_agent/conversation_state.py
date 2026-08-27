@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from ._utils import dump, json_dumps, maybe_await
+from ._utils import dump, json_dumps, maybe_await, validate_schema
 from .tool_types import (
     ConversationState,
     ParsedToolCall,
@@ -195,8 +195,6 @@ async def tool_requires_approval(
     context: Mapping[str, Any],
     call_level_check: Any = None,
 ) -> bool:
-    if call_level_check is not None:
-        return bool(await maybe_await(call_level_check(tool_call, context)))
     matching = next(
         (
             candidate
@@ -205,11 +203,37 @@ async def tool_requires_approval(
         ),
         None,
     )
+
+    # Normalize call-level policy arguments when possible while preserving its raw-call fallback.
+    if call_level_check is not None:
+        normalized_call = tool_call
+        if matching is not None:
+            try:
+                normalized_arguments = validate_schema(
+                    get_tool_function(matching).get("input_schema"),
+                    tool_call.arguments,
+                )
+            except Exception:  # noqa: BLE001 - policy callback gets the raw call on invalid input
+                pass
+            else:
+                normalized_call = replace(tool_call, arguments=normalized_arguments)
+        return bool(await maybe_await(call_level_check(normalized_call, context)))
+
     if not matching:
         return False
     requirement = get_tool_function(matching).get("require_approval")
     if callable(requirement):
-        return bool(await maybe_await(requirement(tool_call.arguments, context)))
+        # Match execute_tool schema semantics and fail closed on invalid input.
+        if isinstance(tool_call.arguments, str):
+            return True
+        try:
+            normalized_arguments = validate_schema(
+                get_tool_function(matching).get("input_schema"),
+                tool_call.arguments,
+            )
+        except Exception:  # noqa: BLE001 - approval checks fail closed on invalid input
+            return True
+        return bool(await maybe_await(requirement(normalized_arguments, context)))
     return bool(requirement)
 
 
