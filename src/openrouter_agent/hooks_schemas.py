@@ -20,6 +20,9 @@ from typing import Any, Dict, Optional, Type, Union
 from pydantic import BaseModel
 from typing_extensions import Literal
 
+from .doom_loop import DoomLoopDetectedPayload as DoomLoopDetectedPayload
+from .doom_loop import DoomLoopDetectedResult as DoomLoopDetectedResult
+
 
 class HookName(str, Enum):
     PreToolUse = "PreToolUse"
@@ -31,6 +34,7 @@ class HookName(str, Enum):
     SessionStart = "SessionStart"
     SessionEnd = "SessionEnd"
     PostModelCall = "PostModelCall"
+    DoomLoopDetected = "DoomLoopDetected"
 
 
 @dataclass(frozen=True)
@@ -70,13 +74,9 @@ class PostToolUsePayload(BaseModel):
 
 
 class PostToolUseFailurePayload(BaseModel):
-    """Fired when a tool EXECUTION throws or returns an error.
-
-    Deliberately NOT fired when a tool never ran: a PermissionRequest 'deny',
-    a user rejection on approval resume, or a PreToolUse block all synthesize
-    a rejected result without execution, so no failure event is emitted.
-    Observe those outcomes via the PermissionRequest / PreToolUse hooks
-    themselves.
+    """Fired when an entered tool lifecycle fails after PreToolUse, including
+    a mutated-input approval denial/rejection or schema-invalid mutation.
+    Initial approval denials and rejections do not enter the lifecycle.
     """
 
     tool_name: str
@@ -116,7 +116,7 @@ class SessionUsageTotals(ModelCallUsage):
 
 
 class SessionEndPayload(BaseModel):
-    reason: Literal["user", "error", "max_turns", "complete"]
+    reason: Literal["user", "error", "max_turns", "complete", "doom_loop"]
     total_usage: Optional[SessionUsageTotals] = None
 
 
@@ -179,6 +179,7 @@ BUILT_IN_HOOKS: HookRegistry = {
     HookName.SessionStart.value: HookDefinition(payload=SessionStartPayload, result=None),
     HookName.SessionEnd.value: HookDefinition(payload=SessionEndPayload, result=None),
     HookName.PostModelCall.value: HookDefinition(payload=PostModelCallPayload, result=None),
+    HookName.DoomLoopDetected.value: HookDefinition(payload=DoomLoopDetectedPayload, result=DoomLoopDetectedResult),
 }
 
 BUILT_IN_HOOK_NAMES = frozenset(BUILT_IN_HOOKS.keys())

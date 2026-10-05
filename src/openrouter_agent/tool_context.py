@@ -4,6 +4,8 @@ import copy
 from collections.abc import Mapping as MappingABC
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from typing_extensions import TypedDict
+
 from ._utils import maybe_await, validate_schema
 from .tool_types import SHARED_CONTEXT_KEY, ContextInput as ContextInput
 
@@ -94,15 +96,46 @@ async def resolve_context(context: Any, turn_context: Mapping[str, Any]) -> Dict
     return dict(context)
 
 
+class ToolExecutionExtras(TypedDict, total=False):
+    """Per-execution extras threaded into the tool execute context (upstream
+    `ToolExecutionExtras`): the per-call cancellation signal, the call id, the
+    conversation id, the parent run's client (agent tools start child runs
+    with it), and -- for unified ``run`` tools -- the async-task affordances
+    (``run_extras``: ``defer``, ``log``, ``on_message``, ``task_id`` getter,
+    ``task_transcript`` slot)."""
+
+    signal: Any
+    call_id: str
+    conversation_id: str
+    client: Any
+    run_extras: Any
+
+
+def _never_cancel_signal() -> Any:
+    """A fresh never-firing signal per context (upstream `neverAbortSignal`):
+    keeps ``ctx["signal"]`` always present so tool bodies can use it
+    unconditionally."""
+    from .tool_task import CancellationController
+
+    return CancellationController()
+
+
 def build_tool_execute_context(
     tool: Mapping[str, Any],
     turn_context: Optional[Mapping[str, Any]] = None,
     store: Optional[ToolContextStore] = None,
     shared_context_schema: Any = None,
+    extras: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     fn = tool.get("function", {})
     name = str(fn.get("name", ""))
     base = dict(turn_context or {})
+    extras = extras or {}
+    base["signal"] = extras.get("signal") if extras.get("signal") is not None else _never_cancel_signal()
+    if extras.get("call_id") is not None:
+        base["call_id"] = extras["call_id"]
+    if extras.get("conversation_id") is not None:
+        base["conversation_id"] = extras["conversation_id"]
     if store is None:
         store = ToolContextStore({})
 
@@ -129,3 +162,55 @@ def build_tool_execute_context(
         }
     )
     return base
+
+
+class _RunContext(dict):  # type: ignore[type-arg]
+    """Execute context for unified ``run`` tools. ``task_id`` is a LIVE
+    lookup: the ToolTask (and its id) is created only after the call escapes
+    the round, after this context is built (upstream defines a getter)."""
+
+    _task_id_getter: Optional[Callable[[], Any]] = None
+
+    def __getitem__(self, key: Any) -> Any:
+        if key == "task_id" and self._task_id_getter is not None:
+            return self._task_id_getter()
+        return super().__getitem__(key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if key == "task_id" and self._task_id_getter is not None:
+            value = self._task_id_getter()
+            return default if value is None else value
+        return super().get(key, default)
+
+
+def build_tool_run_context(
+    tool: Mapping[str, Any],
+    turn_context: Optional[Mapping[str, Any]] = None,
+    store: Optional[ToolContextStore] = None,
+    shared_context_schema: Any = None,
+    extras: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the context for a unified ``run`` tool: the base execute context
+    plus ``defer`` / ``log`` / ``on_message`` / ``task_id`` / ``client``
+    (upstream `buildToolRunContext`)."""
+    fn = tool.get("function", {})
+    name = str(fn.get("name", ""))
+    base = build_tool_execute_context(tool, turn_context, store, shared_context_schema, extras)
+    run_extras: Mapping[str, Any] = (extras or {}).get("run_extras") or {}
+
+    def _no_defer(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"Tool \"{name}\": ctx.defer() is only available on lifecycle: 'deferred' tools")
+
+    ctx = _RunContext(base)
+    ctx["defer"] = run_extras.get("defer") or _no_defer
+    ctx["log"] = run_extras.get("log") or (lambda _entry: None)
+    ctx["on_message"] = run_extras.get("on_message") or (lambda _handler: None)
+    if run_extras.get("task_transcript") is not None:
+        ctx["task_transcript"] = run_extras["task_transcript"]
+    if (extras or {}).get("client") is not None:
+        ctx["client"] = (extras or {})["client"]
+    getter = run_extras.get("task_id_getter")
+    if callable(getter):
+        ctx._task_id_getter = getter
+        ctx["task_id"] = None
+    return ctx
