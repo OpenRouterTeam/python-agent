@@ -12,6 +12,8 @@ from .tool_types import (
     ConversationState,
     ParsedToolCall,
     PartialResponse,
+    PendingAsyncTool,
+    PendingAsyncToolLastLog,
     Tool,
     UnsentToolResult,
     get_tool_function,
@@ -170,6 +172,16 @@ def deserialize_conversation_state(raw_json: str) -> ConversationState:
     if parsed.get("partial_response") is not None:
         partial_response = PartialResponse(**parsed["partial_response"])
 
+    pending_async_tools = None
+    if parsed.get("pending_async_tools") is not None:
+        pending_async_tools = []
+        for item in parsed["pending_async_tools"]:
+            entry = dict(item)
+            last_log = entry.get("last_log")
+            if isinstance(last_log, Mapping):
+                entry["last_log"] = PendingAsyncToolLastLog(**last_log)
+            pending_async_tools.append(PendingAsyncTool(**entry))
+
     return ConversationState(
         id=parsed["id"],
         messages=parsed["messages"],
@@ -182,6 +194,10 @@ def deserialize_conversation_state(raw_json: str) -> ConversationState:
         partial_response=partial_response,
         interrupted_by=parsed.get("interrupted_by"),
         version=CONVERSATION_STATE_VERSION,
+        consumed_forced_tool_choice_key=parsed.get("consumed_forced_tool_choice_key"),
+        doom_loop=parsed.get("doom_loop"),
+        pending_async_tools=pending_async_tools,
+        settled_async_call_ids=parsed.get("settled_async_call_ids"),
     )
 
 
