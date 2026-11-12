@@ -108,9 +108,15 @@ jobs:
             https://github.com/OpenRouterTeam/typescript-agent.git /tmp/upstream-check
           git -C /tmp/upstream-check fetch -q --tags origin
 
-          TAG="@openrouter/agent@${VERSION}"
+          # Downstream-only patch releases: versions upstream never published,
+          # each mapped to the upstream release its tree is ported from.
+          case "$VERSION" in
+            0.8.1) BASE_VERSION="0.8.0" ;;
+            *) BASE_VERSION="$VERSION" ;;
+          esac
+          TAG="@openrouter/agent@${BASE_VERSION}"
           if ! git -C /tmp/upstream-check rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "::error::Upstream has no release tag $TAG. This package's version tracks the ported @openrouter/agent version, so publishing $VERSION means upstream released it. Wait for the upstream release, or correct the version."
+            echo "::error::Upstream has no release tag $TAG. This package's version tracks the ported @openrouter/agent version, so publishing $VERSION means upstream released $BASE_VERSION. Wait for the upstream release, or correct the version."
             exit 1
           fi
 

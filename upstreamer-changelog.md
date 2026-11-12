@@ -1,5 +1,11 @@
 # openrouter-agent-sdk Changelog
 
+## 0.8.1 — approval fix
+
+Downstream-only fix on top of the 0.8.0 port; no new upstream work.
+
+- **Security:** callable `require_approval` predicates and call-level approval checks now see the arguments after `input_schema` parsing (coercions and defaults applied), the same values `execute` receives. Arguments that fail parsing require approval. Before this, a value such as the string `"true"` could pass a strict predicate and then run as boolean `True`.
+
 ## 0.8.0 — first PyPI release
 
 First published release. The version is `0.8.0`, not `0.0.1`, because this
