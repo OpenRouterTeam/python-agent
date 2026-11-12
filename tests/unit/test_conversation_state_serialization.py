@@ -43,7 +43,14 @@ def test_round_trips_a_rich_awaiting_client_tools_state() -> None:
                 "status": "completed",
             },
         ],
-        pending_tool_calls=[ParsedToolCall(id="call_manual_1", name="exec_command", arguments={"command": "ls"})],
+        pending_tool_calls=[
+            ParsedToolCall(
+                id="call_manual_1",
+                name="exec_command",
+                arguments={"command": "ls"},
+                pre_tool_use_applied=True,
+            )
+        ],
         unsent_tool_results=[
             UnsentToolResult(call_id="call_auto_1", name="auto_search", output={"result": "found it"})
         ],
@@ -54,7 +61,12 @@ def test_round_trips_a_rich_awaiting_client_tools_state() -> None:
     assert restored == rich
     assert restored.status == "awaiting_client_tools"
     assert restored.pending_tool_calls == [
-        ParsedToolCall(id="call_manual_1", name="exec_command", arguments={"command": "ls"})
+        ParsedToolCall(
+            id="call_manual_1",
+            name="exec_command",
+            arguments={"command": "ls"},
+            pre_tool_use_applied=True,
+        )
     ]
     assert restored.unsent_tool_results is not None
     assert restored.unsent_tool_results[0].call_id == "call_auto_1"
