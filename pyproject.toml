@@ -8,7 +8,7 @@ name = "openrouter-agent-sdk"
 # says plainly which upstream version it is a port of. The verifier enforces the
 # match against upstream's package.json during a sync. See the Package Version
 # section of .upstreamer/upstreamer.md.
-version = "0.8.1"
+version = "0.8.2"
 description = "Python port of @openrouter/agent: OpenRouter tool orchestration, streaming, state, and format compatibility."
 readme = "README.md"
 requires-python = ">=3.10"
