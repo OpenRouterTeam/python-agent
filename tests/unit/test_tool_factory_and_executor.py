@@ -77,7 +77,9 @@ async def test_generator_tool_uses_final_yield_as_output() -> None:
     assert prelim == [("call_2", {"progress": 0.5})]
     assert result is not None
     assert result["result"].doubled == 8
-    assert result["preliminary_results"] == [{"progress": 0.5}]
+    # Upstream DEV-817 (tool-executor-return.test.ts): yields are broadcast
+    # live only; the terminal result no longer carries a yield history.
+    assert "preliminary_results" not in result
 
 
 async def test_generator_tool_with_overlapping_dict_schemas_keeps_last_yield_as_output() -> None:

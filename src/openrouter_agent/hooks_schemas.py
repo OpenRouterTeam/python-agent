@@ -31,6 +31,7 @@ class HookName(str, Enum):
     SessionStart = "SessionStart"
     SessionEnd = "SessionEnd"
     PostModelCall = "PostModelCall"
+    DoomLoopDetected = "DoomLoopDetected"
 
 
 @dataclass(frozen=True)
@@ -70,13 +71,9 @@ class PostToolUsePayload(BaseModel):
 
 
 class PostToolUseFailurePayload(BaseModel):
-    """Fired when a tool EXECUTION throws or returns an error.
-
-    Deliberately NOT fired when a tool never ran: a PermissionRequest 'deny',
-    a user rejection on approval resume, or a PreToolUse block all synthesize
-    a rejected result without execution, so no failure event is emitted.
-    Observe those outcomes via the PermissionRequest / PreToolUse hooks
-    themselves.
+    """Fired when an entered tool lifecycle fails after PreToolUse, including
+    a mutated-input approval denial/rejection or schema-invalid mutation.
+    Initial approval denials and rejections do not enter the lifecycle.
     """
 
     tool_name: str
@@ -116,7 +113,7 @@ class SessionUsageTotals(ModelCallUsage):
 
 
 class SessionEndPayload(BaseModel):
-    reason: Literal["user", "error", "max_turns", "complete"]
+    reason: Literal["user", "error", "max_turns", "complete", "doom_loop"]
     total_usage: Optional[SessionUsageTotals] = None
 
 
@@ -128,6 +125,26 @@ class PostModelCallPayload(BaseModel):
     turn_type: Literal["initial", "resume", "tool_round", "final", "retry"]
     turn_number: int
     usage: Optional[ModelCallUsage] = None
+
+
+class DoomLoopDetectedPayload(BaseModel):
+    """Fired when doom-loop detection crosses a ladder rung (see the
+    ``doom_loop`` option on ``call_model``)."""
+
+    #: Which detector fired: identical client/server tool calls, or repeated text.
+    detector: Literal["tool-fingerprint", "server-tool-fingerprint", "text-repetition", "text-streak"]
+    #: The ladder action the engine resolved for this streak.
+    action: Literal["observe", "steer", "escalate", "block", "stop"]
+    #: Consecutive repetition count that crossed a ladder rung.
+    streak: int
+    #: Deterministic fingerprint of the repeated unit (call identity or text).
+    fingerprint: str
+    #: Present for tool-fingerprint verdicts.
+    tool_name: Optional[str] = None
+    #: Present for tool-fingerprint verdicts: the repeated call's arguments.
+    tool_input: Optional[Dict[str, Any]] = None
+    #: Explanation used for block outputs / steer messages.
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +182,20 @@ class UserPromptSubmitResult(BaseModel):
     reject: Optional[Union[bool, str]] = None
 
 
+class DoomLoopDetectedResult(BaseModel):
+    """Override the engine's resolved action for THIS event.
+
+    De-escalate (``"observe"`` on a would-be block) or escalate (``"stop"``
+    immediately). When several handlers override, the last override wins.
+    Text and server-tool verdicts cannot be blocked; an ``override_action``
+    of ``"block"`` on them downgrades to ``"observe"``. ``"escalate"`` is
+    honored only when an ``escalation`` config exists and budget remains;
+    otherwise it downgrades to ``"observe"``.
+    """
+
+    override_action: Optional[Literal["observe", "steer", "escalate", "block", "stop"]] = None
+
+
 # ---------------------------------------------------------------------------
 # Built-in hook registry
 # ---------------------------------------------------------------------------
@@ -179,6 +210,7 @@ BUILT_IN_HOOKS: HookRegistry = {
     HookName.SessionStart.value: HookDefinition(payload=SessionStartPayload, result=None),
     HookName.SessionEnd.value: HookDefinition(payload=SessionEndPayload, result=None),
     HookName.PostModelCall.value: HookDefinition(payload=PostModelCallPayload, result=None),
+    HookName.DoomLoopDetected.value: HookDefinition(payload=DoomLoopDetectedPayload, result=DoomLoopDetectedResult),
 }
 
 BUILT_IN_HOOK_NAMES = frozenset(BUILT_IN_HOOKS.keys())

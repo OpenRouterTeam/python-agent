@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from openrouter_agent import call_model, tool
@@ -139,9 +140,16 @@ async def test_throws_on_empty_final_when_strict_final_response_is_true() -> Non
         ).get_text()
     except ValueError as error:
         raised = True
-        assert "Invalid final response: empty or invalid output" in str(error)
+        # Upstream delta 680bceb..50a1ec2 tightened this from a substring match
+        # to an anchored prefix naming the empty array and the response id.
+        assert re.match(
+            r"^Invalid final response: empty or invalid output \u2014 output array is empty \(length 0\) "
+            r'for response "resp_empty"',
+            str(error),
+        )
 
     assert raised
+    # No retry when strict.
     assert len(client.requests) == 2
 
 
@@ -151,8 +159,13 @@ async def test_still_throws_on_empty_output_when_no_tool_rounds_completed() -> N
     raised = False
     try:
         await call_model(client, {"model": "test-model", "input": "hello"}).get_text()
-    except ValueError:
+    except ValueError as error:
         raised = True
+        assert re.match(
+            r"^Invalid final response: empty or invalid output \u2014 output array is empty \(length 0\) "
+            r'for response "resp_empty"\. The model returned no output items',
+            str(error),
+        )
 
     assert raised
     assert len(client.requests) == 1

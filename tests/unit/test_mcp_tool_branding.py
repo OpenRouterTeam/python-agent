@@ -58,3 +58,32 @@ async def test_regular_client_tool_result_carries_source_client() -> None:
     await result.get_response()
 
     assert events[0]["source"] == "client"
+
+
+async def test_source_is_discriminated_by_the_mcp_brand_not_the_tool_name() -> None:
+    # Ports the runtime half of the mcp-result-discrimination.test-d.ts note
+    # changed at this sync: `source` (driven by the MCP brand) stays the
+    # discriminant even though names are now preserved, so a client tool
+    # named like an MCP tool must not be classified as MCP -- and an MCP tool
+    # sharing a client-ish name must still be.
+    lookalike = tool(name="mcp_remote_echo", input_schema=dict, output_schema=dict, execute=lambda p, c: {"ok": True})
+    branded = mark_mcp(tool(name="local_echo", input_schema=dict, output_schema=dict, execute=lambda p, c: {"ok": 1}))
+    client = QueuedClient(
+        [
+            make_response(
+                "r1",
+                [
+                    function_call_item("call_a", "mcp_remote_echo", "{}"),
+                    function_call_item("call_b", "local_echo", "{}"),
+                ],
+            ),
+            text_response("r2", "done"),
+        ]
+    )
+
+    result = call_model(client, {"model": "test-model", "input": "hi", "tools": [lookalike, branded]})
+
+    events = [event async for event in result.get_tool_stream() if event.get("type") == "tool_result"]
+
+    assert [(e["toolCallId"], e["source"]) for e in events] == [("call_a", "client"), ("call_b", "mcp")]
+    assert len(client.requests) == 2

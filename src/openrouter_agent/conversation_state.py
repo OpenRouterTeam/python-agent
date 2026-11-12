@@ -5,9 +5,11 @@ import json
 import time
 import uuid
 from dataclasses import replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ._utils import dump, json_dumps, maybe_await
+from pydantic import BaseModel
+
+from ._utils import dump, json_dumps, maybe_await, validate_schema
 from .tool_types import (
     ConversationState,
     ParsedToolCall,
@@ -99,6 +101,12 @@ def serialize_conversation_state(state: ConversationState) -> str:
     """
     payload = dataclasses.asdict(state)
     payload["version"] = state.version if state.version is not None else CONVERSATION_STATE_VERSION
+    # Upstream writes `preToolUseApplied` only when true (it is `?: true`), so
+    # omit the default marker to keep unprepared pending calls in the legacy
+    # wire shape.
+    for item in payload.get("pending_tool_calls") or []:
+        if isinstance(item, dict) and item.get("pre_tool_use_applied") is not True:
+            item.pop("pre_tool_use_applied", None)
     # State built from live responses can hold SDK pydantic items (e.g.
     # OutputFunctionCallItem), which dataclasses.asdict passes through
     # untouched; dump() them to plain dicts so the wire format stays JSON.
@@ -160,7 +168,16 @@ def deserialize_conversation_state(raw_json: str) -> ConversationState:
 
     pending_tool_calls = None
     if parsed.get("pending_tool_calls") is not None:
-        pending_tool_calls = [ParsedToolCall(**item) for item in parsed["pending_tool_calls"]]
+        # Legacy blobs predate `pre_tool_use_applied`; absence (or any value
+        # other than `true`, as upstream's `=== true` check) means PreToolUse
+        # has not run for the call yet.
+        pending_tool_calls = [
+            ParsedToolCall(
+                **{key: value for key, value in item.items() if key != "pre_tool_use_applied"},
+                pre_tool_use_applied=item.get("pre_tool_use_applied") is True,
+            )
+            for item in parsed["pending_tool_calls"]
+        ]
 
     unsent_tool_results = None
     if parsed.get("unsent_tool_results") is not None:
@@ -182,11 +199,29 @@ def deserialize_conversation_state(raw_json: str) -> ConversationState:
         partial_response=partial_response,
         interrupted_by=parsed.get("interrupted_by"),
         version=CONVERSATION_STATE_VERSION,
+        consumed_forced_tool_choice_key=parsed.get("consumed_forced_tool_choice_key"),
+        doom_loop=parsed.get("doom_loop"),
     )
 
 
 def append_to_messages(current: Any, new_items: Sequence[Any]) -> List[Any]:
     return [*normalize_input_to_array(current), *list(new_items)]
+
+
+def _parse_tool_arguments(tool: Tool, arguments: Any) -> Tuple[bool, Any]:
+    """Parse arguments with the same schema the executor validates through,
+    so approval predicates and `execute` agree on defaults/coercions.
+    Returns `(ok, value)`; Pydantic models are dumped to plain dicts because
+    the predicate contract is a mapping of arguments."""
+    if isinstance(arguments, str):
+        return False, arguments
+    try:
+        parsed = validate_schema(get_tool_function(tool).get("input_schema"), arguments)
+    except Exception:
+        return False, arguments
+    if isinstance(parsed, BaseModel):
+        parsed = parsed.model_dump()
+    return True, parsed
 
 
 async def tool_requires_approval(
@@ -195,8 +230,16 @@ async def tool_requires_approval(
     context: Mapping[str, Any],
     call_level_check: Any = None,
 ) -> bool:
-    if call_level_check is not None:
-        return bool(await maybe_await(call_level_check(tool_call, context)))
+    """Whether a tool call needs approval.
+
+    Call-level checks always take precedence and receive a normalized copy of
+    the call when schema parsing succeeds, or the raw call when it does not.
+    Tool-level predicates receive the parsed arguments -- exactly what
+    `execute` will receive. A schema-invalid payload, or a parse that
+    succeeds with a non-mapping payload, fails closed (requires approval): a
+    PreToolUse hook may later repair the input, so invalid wire arguments
+    cannot safely bypass approval.
+    """
     matching = next(
         (
             candidate
@@ -205,11 +248,23 @@ async def tool_requires_approval(
         ),
         None,
     )
+    if call_level_check is not None:
+        if matching is None:
+            return bool(await maybe_await(call_level_check(tool_call, context)))
+        ok, parsed = _parse_tool_arguments(matching, tool_call.arguments)
+        if not ok:
+            return bool(await maybe_await(call_level_check(tool_call, context)))
+        return bool(await maybe_await(call_level_check(replace(tool_call, arguments=parsed), context)))
     if not matching:
         return False
     requirement = get_tool_function(matching).get("require_approval")
     if callable(requirement):
-        return bool(await maybe_await(requirement(tool_call.arguments, context)))
+        ok, parsed = _parse_tool_arguments(matching, tool_call.arguments)
+        if not ok:
+            return True
+        if not isinstance(parsed, Mapping):
+            return True
+        return bool(await maybe_await(requirement(parsed, context)))
     return bool(requirement)
 
 

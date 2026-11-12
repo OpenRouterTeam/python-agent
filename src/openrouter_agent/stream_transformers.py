@@ -38,8 +38,41 @@ def extract_responses_message_from_response(response: Any) -> Any:
     raise ValueError("Response does not contain a message output item")
 
 
+def is_truncated_at_max_output_tokens(response: Any) -> bool:
+    """Whether the provider stopped this response at `max_output_tokens`.
+
+    The `function_call` items on such a response are an unfinished batch: the
+    model asked for the set together, and the last one carries whatever
+    argument prefix fit in the budget. Executing the complete ones would hand
+    the model a result set with a silent hole, and spend side effects on a turn
+    that truncates the same way on the same budget, so none of them run. The
+    caller sees every item and `incomplete_details`, and resumes once the
+    budget is raised.
+    """
+    if get_field(response, "status") != "incomplete":
+        return False
+    details = get_field(response, "incompleteDetails", get_field(response, "incomplete_details"))
+    return get_field(details, "reason") == "max_output_tokens" if details is not None else False
+
+
+def response_has_tool_calls(response: Any) -> bool:
+    """Whether a response carries tool calls the loop should execute. A
+    response truncated at `max_output_tokens` has none, even when its output
+    carries a cut-off `function_call` item."""
+    if is_truncated_at_max_output_tokens(response):
+        return False
+    return any(get_field(item, "type") == "function_call" for item in _output_items(response))
+
+
 def extract_tool_calls_from_response(response: Any) -> List[ParsedToolCall]:
+    """Extract all tool calls from a completed response.
+
+    A response truncated at `max_output_tokens` yields no tool calls: see
+    `is_truncated_at_max_output_tokens`.
+    """
     calls: List[ParsedToolCall] = []
+    if is_truncated_at_max_output_tokens(response):
+        return calls
     for item in _output_items(response):
         if get_field(item, "type") != "function_call":
             continue

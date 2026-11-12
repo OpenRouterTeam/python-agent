@@ -11,6 +11,8 @@ class CallModelInput(TypedDict, total=False):
     model: str
     input: Any
     tools: Sequence[Any]
+    active_tools: Sequence[str]
+    stream_replay: str
     stop_when: Any
     state: Any
     require_approval: Any
@@ -21,6 +23,7 @@ class CallModelInput(TypedDict, total=False):
     allow_final_response: Any
     strict_final_response: bool
     hooks: Any
+    doom_loop: Any
 
 
 CallModelInputWithState = CallModelInput
@@ -34,6 +37,8 @@ class ResolvedCallModelInput(TypedDict, total=False):
 
 
 _EXCLUDED = {
+    "active_tools",
+    "stream_replay",
     "stop_when",
     "state",
     "require_approval",
@@ -46,6 +51,7 @@ _EXCLUDED = {
     "allow_final_response",
     "strict_final_response",
     "hooks",
+    "doom_loop",
 }
 
 

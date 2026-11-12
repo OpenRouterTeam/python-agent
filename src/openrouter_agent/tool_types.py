@@ -24,6 +24,12 @@ class ParsedToolCall:
     id: str
     name: str
     arguments: Any
+    #: Set on persisted `pending_tool_calls` (upstream `PendingToolCall.
+    #: preToolUseApplied`): PreToolUse already ran during approval
+    #: preparation and `arguments` holds its effective (possibly mutated)
+    #: input, so the approval resume must not run the hook again. Defaults to
+    #: False so legacy state blobs without the field still load.
+    pre_tool_use_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,12 @@ class ConversationState:
     #: Optional so legacy (pre-version-field) states remain constructible;
     #: absence is treated as version 1 by `deserialize_conversation_state`.
     version: Optional[int] = None
+    #: Semantic identity of a forced `tool_choice` that already produced a
+    #: tool call in this logical run, so a resume keeps it relaxed to `auto`.
+    consumed_forced_tool_choice_key: Optional[str] = None
+    #: Doom-loop detector snapshot (see `openrouter_agent.doom_loop`), present
+    #: only when detection is enabled.
+    doom_loop: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -131,7 +143,6 @@ class ToolExecutionResult(TypedDict, total=False):
     #: locally-defined tools. See `is_mcp_tool` / `mark_mcp`.
     source: Literal["client", "mcp"]
     result: object
-    preliminary_results: List[object]
     error: BaseException
 
 
@@ -149,6 +160,8 @@ class ToolPreliminaryResultEvent(TypedDict, total=False):
     type: Literal["tool.preliminary_result", "preliminary_result"]
     toolCallId: str
     tool_call_id: str
+    toolName: str
+    tool_name: str
     result: object
     timestamp: int
 
@@ -157,12 +170,12 @@ class ToolResultEvent(TypedDict, total=False):
     type: Literal["tool.result", "tool_result"]
     toolCallId: str
     tool_call_id: str
+    toolName: str
+    tool_name: str
     #: Origin of the tool result: "mcp" for MCP-branded tools, "client"
     #: otherwise. See `is_mcp_tool` / `mark_mcp`.
     source: Literal["client", "mcp"]
     result: object
-    preliminaryResults: List[object]
-    preliminary_results: List[object]
     timestamp: int
 
 

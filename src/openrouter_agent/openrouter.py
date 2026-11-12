@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import inspect
-from importlib import metadata
-from typing import Any, Callable, Mapping, Optional, Protocol
+from typing import Any, Mapping, Optional, Protocol
 
 from openrouter import OpenRouter as _SDKOpenRouter
 from openrouter._hooks import SDKHooks
 from openrouter._version import __user_agent__
 
-
 from .call_model import call_model
+from .user_agent import AGENT_PACKAGE_NAME as AGENT_PACKAGE_NAME
+from .user_agent import agent_user_agent_token, append_agent_user_agent
 
 
 class Hook(Protocol):
@@ -19,25 +19,10 @@ class Hook(Protocol):
 OpenRouterOptions = Mapping[str, object]
 SDKOptions = Mapping[str, object]
 
-AGENT_PACKAGE_NAME = "openrouter-agent-sdk"
-
-
-def _agent_user_agent_token(
-    version_getter: Optional[Callable[[str], str]] = None,
-) -> str:
-    try:
-        version = (version_getter or metadata.version)(AGENT_PACKAGE_NAME)
-    except metadata.PackageNotFoundError:
-        return AGENT_PACKAGE_NAME
-    return f"{AGENT_PACKAGE_NAME}/{version}"
-
-
-def _append_agent_user_agent(user_agent: str, agent_token: str) -> str:
-    if agent_token in user_agent.split():
-        return user_agent
-    if not user_agent:
-        return agent_token
-    return f"{user_agent} {agent_token}"
+# Kept as module-level names for backwards compatibility; the implementation
+# lives in user_agent.py (upstream lib/user-agent.ts).
+_agent_user_agent_token = agent_user_agent_token
+_append_agent_user_agent = append_agent_user_agent
 
 
 class OpenRouter(_SDKOpenRouter):  # type: ignore[misc, valid-type]
@@ -58,9 +43,12 @@ class OpenRouter(_SDKOpenRouter):  # type: ignore[misc, valid-type]
         if explicit_user_agent is not None:
             self.sdk_configuration.user_agent = explicit_user_agent
         elif self.sdk_configuration.user_agent == __user_agent__:
-            self.sdk_configuration.user_agent = _append_agent_user_agent(
+            # Upstream: `userAgent: rest.userAgent ?? AGENT_USER_AGENT`. The token
+            # is resolved per construction (not the import-time AGENT_USER_AGENT)
+            # so it always reflects the installed distribution metadata.
+            self.sdk_configuration.user_agent = append_agent_user_agent(
                 self.sdk_configuration.user_agent,
-                _agent_user_agent_token(),
+                agent_user_agent_token(),
             )
 
     @staticmethod

@@ -50,7 +50,7 @@ async def _gated_stream(events: List[Dict[str, Any]], gate: asyncio.Event) -> As
 
 async def test_broadcaster_silently_drops_events_pushed_after_complete() -> None:
     """Characterization: this is the mechanism behind the dropped turn.end."""
-    broadcaster = ToolEventBroadcaster()
+    broadcaster: ToolEventBroadcaster[Any] = ToolEventBroadcaster()
     consumer = broadcaster.create_consumer()
 
     broadcaster.push({"type": "turn.start"})
@@ -66,7 +66,7 @@ async def test_broadcaster_silently_drops_events_pushed_after_complete() -> None
 
 async def test_buggy_pattern_drops_turn_end_when_complete_precedes_pipe() -> None:
     """Fire-and-forget pipe + early complete() loses turn.end. Documents the bug."""
-    broadcaster = ToolEventBroadcaster()
+    broadcaster: ToolEventBroadcaster[Any] = ToolEventBroadcaster()
     gate = asyncio.Event()
     stream = ReusableReadableStream(
         _gated_stream([{"type": "response.output_text.delta"}, {"type": "response.completed"}], gate)
@@ -102,7 +102,7 @@ async def test_buggy_pattern_drops_turn_end_when_complete_precedes_pipe() -> Non
 
 async def test_fixed_pattern_preserves_turn_end_when_pipe_is_awaited() -> None:
     """Awaiting the pipe before complete() keeps turn.end, ordered, with turnNumber."""
-    broadcaster = ToolEventBroadcaster()
+    broadcaster: ToolEventBroadcaster[Any] = ToolEventBroadcaster()
     gate = asyncio.Event()
     stream = ReusableReadableStream(
         _gated_stream([{"type": "response.output_text.delta"}, {"type": "response.completed"}], gate)

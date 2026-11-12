@@ -63,7 +63,10 @@ async def test_allow_final_response_executes_pending_tool_before_no_tools_turn()
             "model": "test/model",
             "input": "double 2",
             "tools": [double],
-            "stop_when": step_count_is(1),
+            # Stop conditions see executed tool rounds (upstream
+            # shouldStopExecution), so step_count_is(0) halts on the first
+            # response's calls -- upstream allow-final-response.test.ts.
+            "stop_when": step_count_is(0),
             "allow_final_response": "summarize",
         },
     )
