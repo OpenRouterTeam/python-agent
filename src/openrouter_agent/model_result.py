@@ -29,6 +29,7 @@ from .tool_types import (
     StepResult,
     Tool,
     UnsentToolResult,
+    assert_unique_client_tool_names,
     get_tool_function,
     is_auto_resolvable_tool,
     is_client_tool,
@@ -100,6 +101,7 @@ def _find_latest_user_string_index(items: Sequence[Any]) -> int:
 
 class ModelResult:
     def __init__(self, options: Mapping[str, Any]) -> None:
+        assert_unique_client_tool_names(options.get("tools"))
         self.options = dict(options)
         self._run_task: Optional[asyncio.Task[Any]] = None
         self._final_response: Any = None

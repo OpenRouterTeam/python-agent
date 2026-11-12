@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Set, Union
 
 from typing_extensions import Literal, TypeAlias, TypedDict
 
@@ -273,6 +273,36 @@ def is_mcp_tool(tool: Mapping[str, Any]) -> bool:
 def get_tool_function(tool: Mapping[str, Any]) -> Dict[str, Any]:
     value = tool.get("function", {})
     return value if isinstance(value, dict) else {}
+
+
+def find_duplicate_client_tool_name(tools: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """Return the first client tool name that appears more than once, or `None`.
+    Server tools have no client name and are skipped."""
+    seen: Set[str] = set()
+    for candidate in tools:
+        if is_server_tool(candidate):
+            continue
+        name = get_tool_function(candidate).get("name")
+        if not isinstance(name, str):
+            continue
+        if name in seen:
+            return name
+        seen.add(name)
+    return None
+
+
+def assert_unique_client_tool_names(tools: Optional[Sequence[Mapping[str, Any]]]) -> None:
+    """Raise when two client tools share a name. Calls are dispatched by name, so a
+    duplicate would let whichever tool is listed first receive arguments the model
+    (or an approver) meant for the other."""
+    if not tools:
+        return
+    name = find_duplicate_client_tool_name(tools)
+    if name is not None:
+        raise ValueError(
+            f'Duplicate tool name "{name}": every tool passed to call_model must have a unique name. '
+            "Rename one, or prefix the names of MCP tools when combining them with local tools."
+        )
 
 
 def has_execute_function(tool: Mapping[str, Any]) -> bool:
