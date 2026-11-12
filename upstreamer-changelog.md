@@ -1,6 +1,6 @@
 # openrouter-agent-sdk Changelog
 
-## 0.8.0.post1 — approval fix
+## 0.8.1 — approval fix
 
 Downstream-only fix on top of the 0.8.0 port; no new upstream work.
 
