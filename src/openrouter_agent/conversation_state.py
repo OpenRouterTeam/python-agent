@@ -5,7 +5,9 @@ import json
 import time
 import uuid
 from dataclasses import replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from pydantic import BaseModel
 
 from ._utils import dump, json_dumps, maybe_await, validate_schema
 from .tool_types import (
@@ -189,12 +191,29 @@ def append_to_messages(current: Any, new_items: Sequence[Any]) -> List[Any]:
     return [*normalize_input_to_array(current), *list(new_items)]
 
 
+def _parse_tool_arguments(tool: Tool, arguments: Any) -> Tuple[bool, Any]:
+    """Parse arguments with the schema `execute` validates through, so approval
+    predicates and `execute` see the same defaults and coercions."""
+    if isinstance(arguments, str):
+        return False, arguments
+    try:
+        parsed = validate_schema(get_tool_function(tool).get("input_schema"), arguments)
+    except Exception:
+        return False, arguments
+    if isinstance(parsed, BaseModel):
+        parsed = parsed.model_dump()
+    return True, parsed
+
+
 async def tool_requires_approval(
     tool_call: ParsedToolCall,
     tools: Sequence[Tool],
     context: Mapping[str, Any],
     call_level_check: Any = None,
 ) -> bool:
+    """Call-level checks get a copy of the call with parsed arguments when parsing
+    succeeds. Tool-level predicates get the parsed arguments; invalid or
+    non-mapping arguments fail closed (require approval)."""
     matching = next(
         (
             candidate
@@ -203,37 +222,21 @@ async def tool_requires_approval(
         ),
         None,
     )
-
-    # Normalize call-level policy arguments when possible while preserving its raw-call fallback.
     if call_level_check is not None:
-        normalized_call = tool_call
-        if matching is not None:
-            try:
-                normalized_arguments = validate_schema(
-                    get_tool_function(matching).get("input_schema"),
-                    tool_call.arguments,
-                )
-            except Exception:  # noqa: BLE001 - policy callback gets the raw call on invalid input
-                pass
-            else:
-                normalized_call = replace(tool_call, arguments=normalized_arguments)
-        return bool(await maybe_await(call_level_check(normalized_call, context)))
-
+        if matching is None:
+            return bool(await maybe_await(call_level_check(tool_call, context)))
+        ok, parsed = _parse_tool_arguments(matching, tool_call.arguments)
+        if not ok:
+            return bool(await maybe_await(call_level_check(tool_call, context)))
+        return bool(await maybe_await(call_level_check(replace(tool_call, arguments=parsed), context)))
     if not matching:
         return False
     requirement = get_tool_function(matching).get("require_approval")
     if callable(requirement):
-        # Match execute_tool schema semantics and fail closed on invalid input.
-        if isinstance(tool_call.arguments, str):
+        ok, parsed = _parse_tool_arguments(matching, tool_call.arguments)
+        if not ok or not isinstance(parsed, Mapping):
             return True
-        try:
-            normalized_arguments = validate_schema(
-                get_tool_function(matching).get("input_schema"),
-                tool_call.arguments,
-            )
-        except Exception:  # noqa: BLE001 - approval checks fail closed on invalid input
-            return True
-        return bool(await maybe_await(requirement(normalized_arguments, context)))
+        return bool(await maybe_await(requirement(parsed, context)))
     return bool(requirement)
 
 
