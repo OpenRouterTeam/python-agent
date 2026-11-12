@@ -111,7 +111,7 @@ jobs:
           # Downstream-only patch releases: versions upstream never published,
           # each mapped to the upstream release its tree is ported from.
           case "$VERSION" in
-            0.8.1) BASE_VERSION="0.8.0" ;;
+            0.8.1 | 0.8.2) BASE_VERSION="0.8.0" ;;
             *) BASE_VERSION="$VERSION" ;;
           esac
           TAG="@openrouter/agent@${BASE_VERSION}"

@@ -1,5 +1,12 @@
 # openrouter-agent-sdk Changelog
 
+## 0.8.2 — stop-condition approval fix
+
+Downstream-only fix on top of the 0.8.0 port; no new upstream work.
+
+- **Security:** tool calls that run when a `stop_when` condition fires (final-response handling) now go through the same approval check as a normal turn. Calls that require approval, including tools with `require_approval=True`, pause as `awaiting_approval` instead of executing. Before this, they ran with no approval decision.
+- `call_model` raises when two client tools share a name (shipped in 0.8.1 but missing from its notes).
+
 ## 0.8.1 — approval fix
 
 Downstream-only fix on top of the 0.8.0 port; no new upstream work.
