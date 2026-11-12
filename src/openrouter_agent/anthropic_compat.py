@@ -4,13 +4,18 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from ._utils import get_field, json_dumps, json_loads_maybe
 
+ClaudeMessageInputItem = Dict[str, Any]
+"""An OpenResponses input item emitted by `from_claude_messages`: a user or
+assistant message item, ``function_call``, ``function_call_output``, or
+``image_generation_call`` item."""
+
 
 def _unsupported(original_type: str, data: Any, reason: str) -> Dict[str, Any]:
     return {"original_type": original_type, "data": data, "reason": reason}
 
 
-def from_claude_messages(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    output: List[Dict[str, Any]] = []
+def from_claude_messages(messages: Sequence[Mapping[str, Any]]) -> List[ClaudeMessageInputItem]:
+    output: List[ClaudeMessageInputItem] = []
     for message in messages:
         role = str(message.get("role", "user"))
         content = message.get("content", "")

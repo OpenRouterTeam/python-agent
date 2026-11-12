@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from openrouter_agent import (
     ToolContextStore,
@@ -46,7 +47,7 @@ def test_tool_context_local_and_shared_mutations_are_live() -> None:
 
 
 async def test_tool_event_broadcaster_replays_to_multiple_consumers() -> None:
-    broadcaster = ToolEventBroadcaster()
+    broadcaster: ToolEventBroadcaster[Any] = ToolEventBroadcaster()
     first = broadcaster.create_consumer()
     broadcaster.push({"n": 1})
     broadcaster.push({"n": 2})
@@ -58,7 +59,7 @@ async def test_tool_event_broadcaster_replays_to_multiple_consumers() -> None:
 
 
 async def test_tool_event_broadcaster_waits_for_future_events() -> None:
-    broadcaster = ToolEventBroadcaster()
+    broadcaster: ToolEventBroadcaster[Any] = ToolEventBroadcaster()
 
     async def consume():
         return [item async for item in broadcaster.create_consumer()]

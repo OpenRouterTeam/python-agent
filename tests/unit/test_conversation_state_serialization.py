@@ -143,3 +143,45 @@ def test_serialize_dumps_sdk_pydantic_items_to_json() -> None:
 
     parsed = json.loads(raw)
     assert parsed["messages"][0]["callId"] == "call_1"
+
+
+def test_round_trips_the_pre_tool_use_applied_marker_on_pending_calls() -> None:
+    """Upstream `PendingToolCall.preToolUseApplied` (tool-types.ts): a call
+    paused on the mutated-input approval gate persists its effective
+    arguments with the marker so the resume does not re-run PreToolUse. The
+    marker is written only when set, like upstream's `?: true`."""
+    state = dataclasses.replace(
+        create_initial_state("conv_prepared"),
+        status="awaiting_approval",
+        pending_tool_calls=[
+            ParsedToolCall(id="call_prepared", name="gated", arguments={"v": "mutated"}, pre_tool_use_applied=True),
+            ParsedToolCall(id="call_plain", name="gated", arguments={"v": "x"}),
+        ],
+    )
+
+    raw = serialize_conversation_state(state)
+    restored = deserialize_conversation_state(raw)
+
+    assert restored == state
+    assert [item.get("pre_tool_use_applied") for item in json.loads(raw)["pending_tool_calls"]] == [True, None]
+    assert [call.pre_tool_use_applied for call in restored.pending_tool_calls or []] == [True, False]
+
+
+def test_loads_legacy_pending_calls_without_the_pre_tool_use_applied_marker() -> None:
+    # A blob written before the marker existed: the call has not been through
+    # PreToolUse yet, so the approval resume must prepare it.
+    legacy_json = json.dumps(
+        {
+            "id": "conv_legacy_pending",
+            "messages": [],
+            "status": "awaiting_approval",
+            "created_at": 1,
+            "updated_at": 1,
+            "pending_tool_calls": [{"id": "call_legacy", "name": "gated", "arguments": {"v": "x"}}],
+        }
+    )
+
+    restored = deserialize_conversation_state(legacy_json)
+
+    assert restored.pending_tool_calls == [ParsedToolCall(id="call_legacy", name="gated", arguments={"v": "x"})]
+    assert restored.pending_tool_calls[0].pre_tool_use_applied is False

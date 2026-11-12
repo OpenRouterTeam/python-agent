@@ -177,7 +177,7 @@ hooks.on(HookName.SessionEnd.value, HookEntry(handler=lambda payload, ctx: print
 result = call_model(client, {"model": model, "input": prompt, "tools": tools, "hooks": hooks})
 ```
 
-`SessionStart` fires once per run with a config summary; `SessionEnd` fires once with aggregated `total_usage` (summed across every `PostModelCall`) and is guaranteed to fire — and any pending async hook work drained — even when a no-tools stream raises. `PreToolUse` can block a call (`{"block": "reason"}`) or mutate its input (`{"mutated_input": {...}}`); `PermissionRequest` can pre-empt the approval gate with `{"decision": "allow" | "deny" | "ask_user"}`; `Stop` can force the loop to keep going past a `stop_when` hit with `{"force_resume": True, "append_prompt": "..."}`. A `HooksManager` instance is safe to share across concurrent `call_model` runs — session identity is threaded per emit, not stored as manager-level mutable state.
+`SessionStart` fires once per run with a config summary; `SessionEnd` fires once with aggregated `total_usage` (summed across every `PostModelCall`) and is guaranteed to fire — and any pending async hook work drained — even when a no-tools stream raises. `PreToolUse` can block a call (`{"block": "reason"}`) or mutate its input (`{"mutated_input": {...}}`). It runs once per call, after the initial approval check and before execution, so a mutated input is validated against the tool's `input_schema` and re-gated by any input-dependent approval source (a callable `require_approval`, tool- or call-level); a call that pauses on that second gate is persisted with its effective arguments and `pre_tool_use_applied=True`, and the resume does not run `PreToolUse` again. `PermissionRequest` can pre-empt the approval gate with `{"decision": "allow" | "deny" | "ask_user"}`; `Stop` can force the loop to keep going past a `stop_when` hit with `{"force_resume": True, "append_prompt": "..."}`. A `HooksManager` instance is safe to share across concurrent `call_model` runs — session identity is threaded per emit, not stored as manager-level mutable state.
 
 ## Stop Conditions
 
@@ -190,6 +190,31 @@ The built-ins mirror the TypeScript package and OR together when provided as a l
 - `finish_reason_is(reason)`
 
 When a stop condition fires while the model is still emitting tool calls, `call_model` makes one more turn with `tool_choice="none"` by default (tools stay in the request so the prompt-cache prefix survives) so the run ends with a natural-language answer. `allow_final_response` tunes this: `True` or omitted appends `DEFAULT_FINAL_RESPONSE_DIRECTIVE` as a user message, a non-empty string replaces the wording, `""` appends nothing, and `False` disables the extra turn entirely.
+
+## Doom-Loop Detection
+
+Opt in with `doom_loop=True` (defaults) or a config dict to catch a run that keeps spending without progress: the same tool call re-issued with identical arguments (including empty and invalid-JSON calls), repeated server-tool calls, or repeated text. Detection is deterministic and feeds a ladder — `observe` (emit `DoomLoopDetected`), `steer` (inject guidance as a user message before the next request), `escalate` (one-turn `model` swap and/or forced `openrouter:advisor` consult, capped by `max_escalations`), `block` (refuse the call with an error output, before `PreToolUse`), `stop` (halt before any further model request; `SessionEnd` reason `"doom_loop"`). Defaults: observe at 2, block at 3, stop at 6.
+
+```python
+result = call_model(client, {
+    "model": "openai/gpt-4o-mini",
+    "input": "Find it.",
+    "tools": [tool(name="web_search", input_schema=Query, execute=search,
+                   loop_key=lambda args: args["query"].strip().lower())],
+    "doom_loop": {"ladder": {"steer": 2, "block": 3, "stop": 5}},
+})
+verdict = await result.get_doom_loop_verdict()  # the stop verdict, or None
+```
+
+`loop_key` declares a tool's call identity (`False` exempts the tool; a callable returning `None` exempts that call). A `DoomLoopDetected` handler can return `{"override_action": ...}`. Detector state persists in `ConversationState.doom_loop`, so a resumed doom loop is still a doom loop.
+
+## Usage, Tool Sets, and Tool Choice
+
+- `await result.get_usage()` returns aggregate token/cost totals across every model call the run made (same shape as `SessionEnd`'s `total_usage`); it never raises.
+- `active_tools=[...]` on `call_model` filters which client tools are sent to (and executable by) the model; server tools always pass. `create_tool_set(tools)` builds declarative `activate` / `deactivate` / `activate_when` / `deactivate_when` rules, and `tool_set.resolve().call_model` is a `{"tools", "active_tools"}` mapping to spread into the request.
+- A forced `tool_choice` (`"required"`, a specific tool, or `allowed_tools` with `mode: "required"`) relaxes to `auto` after it produces a tool call, so the model can answer in text. Tools can change the next turn's `tool_choice` via `next_turn_params={"tool_choice": fn}`.
+- `tool(..., strict=True)` passes `strict` through to the wire definition; `tool(..., wire_input_schema={...})` sends a caller-owned JSON Schema instead of the generated one; `server_tool(config, {"id": ...})` overrides the default `server:<type>` id.
+- A response truncated at `max_output_tokens` never executes its (cut-off) tool calls.
 
 ## Format Compatibility
 

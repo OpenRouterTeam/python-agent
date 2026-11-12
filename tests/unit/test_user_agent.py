@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import re
 
 import httpx
 
@@ -8,6 +9,34 @@ from openrouter._version import __user_agent__
 from openrouter.errors.responsevalidationerror import ResponseValidationError
 from openrouter_agent import OpenRouter, call_model
 from openrouter_agent.openrouter import _agent_user_agent_token, _append_agent_user_agent
+from openrouter_agent.user_agent import AGENT_USER_AGENT, PACKAGE_VERSION, build_agent_user_agent
+
+
+def test_agent_user_agent_composes_sdk_and_agent_package_versions() -> None:
+    """Ports tests/unit/user-agent.test.ts.
+
+    Upstream asserts ` @openrouter/agent/<semver>`; this port appends the PyPI
+    distribution name instead (contract, Idiomatic Divergences #7). Do not
+    "fix" this to the TypeScript literal.
+    """
+    assert PACKAGE_VERSION == importlib.metadata.version("openrouter-agent-sdk")
+    assert AGENT_USER_AGENT == f"{__user_agent__} openrouter-agent-sdk/{PACKAGE_VERSION}"
+    assert AGENT_USER_AGENT.startswith("speakeasy-sdk/python ")
+    assert re.search(r" openrouter-agent-sdk/\d+\.\d+\.\d+$", AGENT_USER_AGENT)
+    assert "@openrouter/agent" not in AGENT_USER_AGENT
+
+
+def test_default_client_user_agent_equals_agent_user_agent() -> None:
+    # Ports openrouter.test.ts "should default to the Agent SDK user agent".
+    assert OpenRouter(api_key="test").sdk_configuration.user_agent == AGENT_USER_AGENT
+
+
+def test_build_agent_user_agent_falls_back_to_bare_name_without_metadata() -> None:
+    def missing(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    assert build_agent_user_agent(missing) == f"{__user_agent__} openrouter-agent-sdk"
+    assert build_agent_user_agent(lambda _name: "9.9.9") == f"{__user_agent__} openrouter-agent-sdk/9.9.9"
 
 
 def test_constructed_client_appends_agent_user_agent() -> None:

@@ -44,13 +44,18 @@ def convert_tools_to_api_format(tools: Sequence[Tool]) -> List[Dict[str, Any]]:
             converted.append(dict(config) if isinstance(config, Mapping) else {})
             continue
         fn = get_tool_function(item)
+        wire_schema = fn.get("wire_input_schema")
         api: Dict[str, Any] = {
             "type": "function",
             "name": fn.get("name"),
-            "parameters": schema_to_json_schema(fn.get("input_schema")),
+            "parameters": sanitize_json_schema(dict(wire_schema))
+            if wire_schema is not None
+            else schema_to_json_schema(fn.get("input_schema")),
         }
         if fn.get("description") is not None:
             api["description"] = fn["description"]
+        if fn.get("strict") is not None:
+            api["strict"] = fn["strict"]
         converted.append(api)
     return converted
 
@@ -62,7 +67,7 @@ async def execute_regular_tool(
     source = "mcp" if is_mcp_tool(tool) else "client"
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
-        result = await maybe_await(fn["execute"](args, context))
+        result = await maybe_await(fn["execute"](args, _with_tool_call(context, tool_call)))
         if fn.get("output_schema") is not None:
             result = validate_schema(fn.get("output_schema"), result)
         return {"tool_call_id": tool_call.id, "tool_name": tool_call.name, "source": source, "result": result}
@@ -84,10 +89,13 @@ async def execute_generator_tool(
 ) -> Dict[str, Any]:
     fn = get_tool_function(tool)
     source = "mcp" if is_mcp_tool(tool) else "client"
-    preliminary: List[Any] = []
+    # Upstream (DEV-817) stopped accumulating every yield into a per-call
+    # `preliminary_results` array: yields are broadcast live through
+    # `on_preliminary_result` only, and the terminal result no longer carries
+    # the yield history.
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
-        produced = fn["execute"](args, context)
+        produced = fn["execute"](args, _with_tool_call(context, tool_call))
         if not hasattr(produced, "__aiter__"):
             produced = await maybe_await(produced)
         final = None
@@ -99,7 +107,6 @@ async def execute_generator_tool(
         async for value in produced:
             if broad_overlapping_schemas:
                 if pending_broad_event is not None:
-                    preliminary.append(pending_broad_event)
                     if on_preliminary_result is not None:
                         await maybe_await(on_preliminary_result(tool_call.id, pending_broad_event))
                 pending_broad_event = value
@@ -116,7 +123,6 @@ async def execute_generator_tool(
                 continue
             if fn.get("event_schema") is not None:
                 value = validate_schema(fn.get("event_schema"), value)
-            preliminary.append(value)
             if on_preliminary_result is not None:
                 await maybe_await(on_preliminary_result(tool_call.id, value))
         if broad_overlapping_schemas and pending_broad_event is not None:
@@ -131,7 +137,6 @@ async def execute_generator_tool(
             "tool_name": tool_call.name,
             "source": source,
             "result": final,
-            "preliminary_results": preliminary,
         }
     except Exception as exc:
         return {
@@ -139,7 +144,6 @@ async def execute_generator_tool(
             "tool_name": tool_call.name,
             "source": source,
             "result": None,
-            "preliminary_results": preliminary,
             "error": exc,
         }
 
@@ -151,7 +155,7 @@ async def execute_hitl_tool(
     source = "mcp" if is_mcp_tool(tool) else "client"
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
-        result = await maybe_await(fn["on_tool_called"](args, context))
+        result = await maybe_await(fn["on_tool_called"](args, _with_tool_call(context, tool_call)))
         if result is None:
             return None
         result = validate_schema(fn.get("output_schema"), result)
@@ -164,6 +168,32 @@ async def execute_hitl_tool(
             "result": None,
             "error": exc,
         }
+
+
+def _with_tool_call(context: Optional[Mapping[str, Any]], tool_call: ParsedToolCall) -> Dict[str, Any]:
+    """Thread the executed call into the execute context. `tool_call` is part
+    of the tool-facing contract: a caller-provided one wins; otherwise the
+    executed call fills the gap as a wire-shaped function_call item. Every
+    executor entry point applies this (upstream `buildExecuteCtx`)."""
+    merged = dict(context or {})
+    if not merged.get("tool_call"):
+        merged["tool_call"] = to_function_call_item(tool_call)
+    return merged
+
+
+def to_function_call_item(tool_call: ParsedToolCall) -> Dict[str, Any]:
+    """Convert an executor-shaped `ParsedToolCall` back into the wire-shaped
+    function_call item the execute context declares. Arguments are always
+    re-serialized (semantically equal to the wire arguments, not guaranteed
+    byte-identical)."""
+    arguments = tool_call.arguments
+    return {
+        "type": "function_call",
+        "id": tool_call.id,
+        "callId": tool_call.id,
+        "name": tool_call.name,
+        "arguments": json_dumps(arguments) if arguments is not None else "{}",
+    }
 
 
 async def execute_tool(

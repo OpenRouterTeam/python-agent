@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable, Mapping, Sequence
 
 from ._utils import get_field, maybe_await
@@ -18,7 +19,7 @@ def has_tool_call(name: str) -> Callable[[Mapping[str, Any]], bool]:
         return any(
             getattr(call, "name", None) == name or (isinstance(call, Mapping) and call.get("name") == name)
             for step in _steps(options)
-            for call in get_field(step, "tool_calls", [])
+            for call in (get_field(step, "tool_calls", None) or get_field(step, "toolCalls", None) or [])
         )
 
     return check
@@ -59,7 +60,12 @@ def finish_reason_is(reason: str) -> Callable[[Mapping[str, Any]], bool]:
 async def is_stop_condition_met(
     stop_conditions: Sequence[Callable[[Mapping[str, Any]], Any]], steps: Sequence[Any]
 ) -> bool:
-    for condition in stop_conditions:
-        if await maybe_await(condition({"steps": steps})):
-            return True
-    return False
+    """Evaluate every stop condition (OR logic).
+
+    Matches upstream `isStopConditionMet`: all conditions are evaluated
+    concurrently (no short-circuit), a failing condition propagates its error,
+    and only a result that is exactly ``True`` stops — ``None`` or other truthy
+    values do not.
+    """
+    results = await asyncio.gather(*(maybe_await(condition({"steps": steps})) for condition in stop_conditions))
+    return any(result is True for result in results)

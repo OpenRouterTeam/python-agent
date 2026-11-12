@@ -18,7 +18,11 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Pattern, Sequence, Union
 
-from .hooks_schemas import HookName  # noqa: F401  (re-exported for import-surface parity)
+from .hooks_schemas import (  # noqa: F401  (re-exported for import-surface parity)
+    DoomLoopDetectedPayload,
+    DoomLoopDetectedResult,
+    HookName,
+)
 
 #: Matcher for tool-scoped hooks. Filters handler invocation by tool name.
 ToolMatcher = Union[str, Pattern[str], Callable[[str], bool]]
