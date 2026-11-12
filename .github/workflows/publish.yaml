@@ -116,7 +116,7 @@ jobs:
           esac
           TAG="@openrouter/agent@${BASE_VERSION}"
           if ! git -C /tmp/upstream-check rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "::error::Upstream has no release tag $TAG. This package's version tracks the ported @openrouter/agent version so publishing $VERSION means upstream released $BASE_VERSION. Wait for the upstream release, or correct the version."
+            echo "::error::Upstream has no release tag $TAG. This package's version tracks the ported @openrouter/agent version, so publishing $VERSION means upstream released $BASE_VERSION. Wait for the upstream release, or correct the version."
             exit 1
           fi
 
