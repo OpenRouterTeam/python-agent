@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Mapping
 
 from pydantic import BaseModel
 
@@ -147,9 +147,9 @@ async def test_tool_approval_predicate_receives_schema_defaults() -> None:
     observed: List[bool] = []
     executed: List[Any] = []
 
-    def needs_approval(params: DeployInput, _context: Any) -> bool:
-        observed.append(params.dangerous)
-        return params.dangerous
+    def needs_approval(params: Mapping[str, Any], _context: Any) -> bool:
+        observed.append(params["dangerous"])
+        return params["dangerous"]
 
     def execute(params: Any, _context: Any) -> Any:
         executed.append(params)
@@ -181,8 +181,8 @@ async def test_call_level_approval_predicate_receives_schema_normalized_call() -
     observed: List[bool] = []
 
     def needs_approval(call: Any, _context: Any) -> bool:
-        observed.append(call.arguments.dangerous)
-        return call.arguments.dangerous
+        observed.append(call.arguments["dangerous"])
+        return call.arguments["dangerous"]
 
     deploy = tool(
         name="deploy",
@@ -220,9 +220,9 @@ async def test_pre_tool_use_mutation_is_approved_once_and_persists_across_resume
         pre_tool_use_calls.append(payload)
         return {"mutated_input": {"dangerous": True}}
 
-    def needs_approval(params: DeployInput, _context: Any) -> bool:
-        predicate_values.append(params.dangerous)
-        return params.dangerous
+    def needs_approval(params: Mapping[str, Any], _context: Any) -> bool:
+        predicate_values.append(params["dangerous"])
+        return params["dangerous"]
 
     def execute(params: DeployInput, _context: Any) -> Any:
         executed.append(params)
