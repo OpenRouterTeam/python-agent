@@ -80,6 +80,30 @@ async def test_generator_tool_uses_final_yield_as_output() -> None:
     assert result["preliminary_results"] == [{"progress": 0.5}]
 
 
+async def test_generator_tool_with_dict_event_schema_keeps_earlier_output_shaped_yields_preliminary() -> None:
+    class Out(BaseModel):
+        data: str
+
+    async def execute(params, ctx):
+        yield {"phase": "progress", "data": "progress-only"}
+        yield {"data": "final"}
+
+    generated = tool(name="gen_overlap", input_schema=dict, event_schema=dict, output_schema=Out, execute=execute)
+    prelim = []
+
+    result = await execute_tool(
+        generated,
+        ParsedToolCall(id="call_4", name="gen_overlap", arguments={}),
+        on_preliminary_result=lambda call_id, value: prelim.append((call_id, value)),
+    )
+
+    assert result is not None
+    assert "error" not in result
+    assert result["result"].data == "final"
+    assert prelim == [("call_4", {"phase": "progress", "data": "progress-only"})]
+    assert result["preliminary_results"] == [{"phase": "progress", "data": "progress-only"}]
+
+
 async def test_generator_tool_with_overlapping_dict_schemas_keeps_last_yield_as_output() -> None:
     async def execute(params, ctx):
         yield {"progress": 0.5}
