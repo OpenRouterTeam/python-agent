@@ -679,6 +679,8 @@ class ModelResult:
                 converted = await maybe_await(converter({"output": result.get("result"), "input": call.arguments}))
                 if isinstance(converted, Mapping) and converted.get("type") == "content":
                     output = converted.get("value", [])
+                elif isinstance(converted, Mapping) and converted.get("type") == "json":
+                    output = json_dumps(converted.get("value"))
                 else:
                     output = json_dumps(result.get("result"))
             else:
