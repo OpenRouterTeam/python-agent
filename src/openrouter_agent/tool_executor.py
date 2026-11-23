@@ -94,33 +94,40 @@ async def execute_generator_tool(
         has_final = False
         last_value = None
         has_value = False
-        broad_overlapping_schemas = fn.get("event_schema") is dict and fn.get("output_schema") is dict
-        pending_broad_event = None
+        broad_event_schema = fn.get("event_schema") is dict
+        pending_output = None
+        has_pending_output = False
+
+        async def emit_preliminary(event: Any) -> None:
+            preliminary.append(event)
+            if on_preliminary_result is not None:
+                await maybe_await(on_preliminary_result(tool_call.id, event))
+
         async for value in produced:
-            if broad_overlapping_schemas:
-                if pending_broad_event is not None:
-                    preliminary.append(pending_broad_event)
-                    if on_preliminary_result is not None:
-                        await maybe_await(on_preliminary_result(tool_call.id, pending_broad_event))
-                pending_broad_event = value
-                has_value = True
-                last_value = value
-                continue
             has_value = True
             last_value = value
+            if broad_event_schema:
+                # A dict event schema accepts every yield, so only the last yield can be the output.
+                if has_pending_output:
+                    await emit_preliminary(pending_output)
+                    has_pending_output = False
+                if _try_validate(fn.get("output_schema"), value):
+                    pending_output = value
+                    has_pending_output = True
+                else:
+                    await emit_preliminary(value)
+                continue
             matches_output = _try_validate(fn.get("output_schema"), value)
             matches_event = _try_validate(fn.get("event_schema"), value)
-            if matches_output and (not matches_event or fn.get("event_schema") is dict) and not has_final:
+            if matches_output and not matches_event and not has_final:
                 final = validate_schema(fn.get("output_schema"), value)
                 has_final = True
                 continue
             if fn.get("event_schema") is not None:
                 value = validate_schema(fn.get("event_schema"), value)
-            preliminary.append(value)
-            if on_preliminary_result is not None:
-                await maybe_await(on_preliminary_result(tool_call.id, value))
-        if broad_overlapping_schemas and pending_broad_event is not None:
-            final = validate_schema(fn.get("output_schema"), pending_broad_event)
+            await emit_preliminary(value)
+        if has_pending_output:
+            final = validate_schema(fn.get("output_schema"), pending_output)
             has_final = True
         if not has_final:
             if not has_value:
