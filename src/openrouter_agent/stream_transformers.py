@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Optional
+from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 
 from ._utils import get_field, json_loads_maybe
 from .tool_types import ParsedToolCall
@@ -55,6 +55,50 @@ def extract_tool_calls_from_response(response: Any) -> List[ParsedToolCall]:
     return calls
 
 
+def assert_streamed_tool_calls_match_response(events: List[Any], response: Any) -> None:
+    """Raise if a function call finalized in the stream differs from the completed response.
+
+    `get_tool_calls_stream()` shows calls built from stream events, while pending state and
+    execution use the completed response. Both views must describe the same call.
+    """
+    names: Dict[str, str] = {}
+    call_ids: Dict[str, str] = {}
+    buffers: Dict[str, List[str]] = {}
+    streamed: List[Tuple[str, str, str, Any]] = []
+    for event in events:
+        typ = get_field(event, "type")
+        if typ == "response.output_item.added":
+            item = get_field(event, "item", {})
+            if get_field(item, "type") == "function_call":
+                item_id = str(get_field(item, "id", get_field(item, "callId", "")))
+                names[item_id] = str(get_field(item, "name", ""))
+                call_ids[item_id] = str(get_field(item, "callId", get_field(item, "call_id", item_id)))
+                buffers.setdefault(item_id, [])
+        elif typ == "response.function_call_arguments.delta":
+            item_id = str(get_field(event, "itemId", get_field(event, "item_id", get_field(event, "callId", ""))))
+            buffers.setdefault(item_id, []).append(str(get_field(event, "delta", "")))
+        elif typ == "response.function_call_arguments.done":
+            item_id = str(get_field(event, "itemId", get_field(event, "item_id", get_field(event, "callId", ""))))
+            raw = get_field(event, "arguments", "".join(buffers.get(item_id, [])))
+            name = names.get(item_id, str(get_field(event, "name", "")))
+            streamed.append((item_id, call_ids.get(item_id, item_id), name, json_loads_maybe(raw)))
+    if not streamed:
+        return
+
+    terminal = [item for item in _output_items(response) if get_field(item, "type") == "function_call"]
+    for item_id, call_id, name, args in streamed:
+        for item in terminal:
+            terminal_call_id = str(get_field(item, "callId", get_field(item, "call_id", get_field(item, "id", ""))))
+            if terminal_call_id != call_id and str(get_field(item, "id", "")) != item_id:
+                continue
+            terminal_args = json_loads_maybe(get_field(item, "arguments", {}))
+            if str(get_field(item, "name", "")) != name or terminal_args != args:
+                raise ValueError(
+                    f'Streamed function_call "{call_id}" does not match the function_call in the completed '
+                    "response; refusing to save or run tool calls from this response"
+                )
+
+
 async def consume_stream_for_completion(stream: AsyncIterable[Any]) -> Any:
     completed: Optional[Any] = None
     async for event in stream:
@@ -97,7 +141,7 @@ async def build_tool_call_stream(events: AsyncIterable[Any]) -> AsyncIterator[Pa
             if get_field(item, "type") == "function_call":
                 item_id = str(get_field(item, "id", get_field(item, "callId", "")))
                 names[item_id] = str(get_field(item, "name", ""))
-                call_ids[item_id] = str(get_field(item, "callId", item_id))
+                call_ids[item_id] = str(get_field(item, "callId", get_field(item, "call_id", item_id)))
                 buffers.setdefault(item_id, [])
         elif typ == "response.function_call_arguments.delta":
             item_id = str(get_field(event, "itemId", get_field(event, "item_id", get_field(event, "callId", ""))))

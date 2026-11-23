@@ -21,7 +21,11 @@ from .conversation_state import (
 )
 from .next_turn_params import apply_next_turn_params_to_request, execute_next_turn_params_functions
 from .stop_conditions import is_stop_condition_met
-from .stream_transformers import extract_text_from_response, extract_tool_calls_from_response
+from .stream_transformers import (
+    assert_streamed_tool_calls_match_response,
+    extract_text_from_response,
+    extract_tool_calls_from_response,
+)
 from .tool_context import ToolContextStore, resolve_context
 from .tool_executor import apply_on_response_received_hooks, execute_tool
 from .tool_types import (
@@ -171,8 +175,10 @@ class ModelResult:
             raise getattr(value, "error", RuntimeError("Responses API request failed"))
         if is_async_iterable(value):
             completed = None
+            received: List[Any] = []
             async for event in value:
                 await self._append_event(event)
+                received.append(event)
                 typ = get_field(event, "type")
                 if typ in {"response.completed", "response.incomplete"}:
                     completed = get_field(event, "response")
@@ -180,6 +186,7 @@ class ModelResult:
                     raise RuntimeError(str(get_field(event, "message", "Response failed")))
             if completed is None:
                 raise RuntimeError("Stream ended without response.completed")
+            assert_streamed_tool_calls_match_response(received, completed)
             return completed
         for attr in ("value", "response", "result"):
             if hasattr(value, attr):
@@ -195,6 +202,8 @@ class ModelResult:
                 await self._append_event(event)
                 if event.get("type") in {"response.completed", "response.incomplete"}:
                     completed = event.get("response")
+            if completed is not None:
+                assert_streamed_tool_calls_match_response(value, completed)
             return completed or {"id": "response_from_events", "output": []}
         return value
 
@@ -1245,7 +1254,7 @@ class ModelResult:
                 if get_field(item, "type") == "function_call":
                     item_id = str(get_field(item, "id", get_field(item, "callId", "")))
                     names[item_id] = str(get_field(item, "name", ""))
-                    call_ids[item_id] = str(get_field(item, "callId", item_id))
+                    call_ids[item_id] = str(get_field(item, "callId", get_field(item, "call_id", item_id)))
                     buffers.setdefault(item_id, [])
             elif typ == "response.function_call_arguments.delta":
                 item_id = str(get_field(event, "itemId", get_field(event, "item_id", get_field(event, "callId", ""))))
