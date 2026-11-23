@@ -21,7 +21,11 @@ from .conversation_state import (
 )
 from .next_turn_params import apply_next_turn_params_to_request, execute_next_turn_params_functions
 from .stop_conditions import is_stop_condition_met
-from .stream_transformers import extract_text_from_response, extract_tool_calls_from_response
+from .stream_transformers import (
+    assert_streamed_tool_calls_match_response,
+    extract_text_from_response,
+    extract_tool_calls_from_response,
+)
 from .tool_context import ToolContextStore, resolve_context
 from .tool_executor import apply_on_response_received_hooks, execute_tool
 from .tool_types import (
@@ -171,8 +175,10 @@ class ModelResult:
             raise getattr(value, "error", RuntimeError("Responses API request failed"))
         if is_async_iterable(value):
             completed = None
+            received: List[Any] = []
             async for event in value:
                 await self._append_event(event)
+                received.append(event)
                 typ = get_field(event, "type")
                 if typ in {"response.completed", "response.incomplete"}:
                     completed = get_field(event, "response")
@@ -180,6 +186,7 @@ class ModelResult:
                     raise RuntimeError(str(get_field(event, "message", "Response failed")))
             if completed is None:
                 raise RuntimeError("Stream ended without response.completed")
+            assert_streamed_tool_calls_match_response(received, completed)
             return completed
         for attr in ("value", "response", "result"):
             if hasattr(value, attr):
@@ -195,6 +202,8 @@ class ModelResult:
                 await self._append_event(event)
                 if event.get("type") in {"response.completed", "response.incomplete"}:
                     completed = event.get("response")
+            if completed is not None:
+                assert_streamed_tool_calls_match_response(value, completed)
             return completed or {"id": "response_from_events", "output": []}
         return value
 
@@ -830,6 +839,7 @@ class ModelResult:
                     final_response_enabled = allow_final_response is not False
                     resolvable_pending = [c for c in calls if self._call_is_auto_resolvable(c, tools)]
                     if final_response_enabled and resolvable_pending:
+                        self._assert_unique_call_ids(calls, tools)
                         turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
                         requires_approval, executable_calls, gate_results = await self._resolve_approval_gate(
                             calls, tools, turn_context
@@ -895,6 +905,7 @@ class ModelResult:
                         continue
                     break
 
+                self._assert_unique_call_ids(calls, tools)
                 turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
                 requires_approval, executable_calls, hook_resolved_unsent = await self._resolve_approval_gate(
                     calls,
@@ -1044,6 +1055,25 @@ class ModelResult:
         tool = self._find_tool(call.name, tools)
         return bool(tool and is_auto_resolvable_tool(tool))
 
+    def _assert_unique_call_ids(self, calls: Sequence[ParsedToolCall], tools: Sequence[Tool]) -> None:
+        """Refuse a batch the loop would execute when two calls share a `call_id`.
+
+        Approvals, rejections and tool outputs are all matched to calls by that
+        id, so a repeated id would let one decision apply to a different call.
+        The batch runs nothing. Batches with no executable calls are left to the
+        caller, who owns correlation for manual tools.
+        """
+        if not any(self._call_is_auto_resolvable(call, tools) for call in calls):
+            return
+        seen: set[str] = set()
+        for call in calls:
+            if call.id in seen:
+                raise ValueError(
+                    f'Response contains more than one function_call with call_id "{call.id}"; '
+                    "refusing to execute the batch because tool outputs are matched to calls by call_id."
+                )
+            seen.add(call.id)
+
     async def _build_resume_request(self, request: Mapping[str, Any]) -> Dict[str, Any]:
         self._fresh_items_for_state = []
         approved = set(self.options.get("approve_tool_calls") or [])
@@ -1052,6 +1082,15 @@ class ModelResult:
         if self._state is not None and self._state.unsent_tool_results:
             outputs.extend(unsent_results_to_api_format(self._state.unsent_tool_results))
         pending: List[ParsedToolCall] = self._state.pending_tool_calls if self._state is not None else []
+        unsent_ids = [result.call_id for result in (self._state.unsent_tool_results or [])] if self._state else []
+        seen_ids: set[str] = set(unsent_ids)
+        for call in pending or []:
+            if call.id in seen_ids:
+                raise ValueError(
+                    f'Saved state has more than one tool call with call_id "{call.id}"; '
+                    "refusing to resume because approvals are matched to calls by call_id."
+                )
+            seen_ids.add(call.id)
         for call in pending or []:
             tool = self._find_tool(call.name, self.options.get("tools") or [])
             if call.id in rejected:
@@ -1217,7 +1256,7 @@ class ModelResult:
                 if get_field(item, "type") == "function_call":
                     item_id = str(get_field(item, "id", get_field(item, "callId", "")))
                     names[item_id] = str(get_field(item, "name", ""))
-                    call_ids[item_id] = str(get_field(item, "callId", item_id))
+                    call_ids[item_id] = str(get_field(item, "callId", get_field(item, "call_id", item_id)))
                     buffers.setdefault(item_id, [])
             elif typ == "response.function_call_arguments.delta":
                 item_id = str(get_field(event, "itemId", get_field(event, "item_id", get_field(event, "callId", ""))))
