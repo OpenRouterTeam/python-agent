@@ -94,7 +94,9 @@ class EmitResult:
     pending: List["asyncio.Task[None]"] = field(default_factory=list)
     #: The payload after all mutation piping has been applied.
     final_payload: Dict[str, Any] = field(default_factory=dict)
-    #: True if any handler triggered a block/reject short-circuit.
+    #: True if any handler triggered a block/reject short-circuit, or if the
+    #: chain of a blocking hook (PreToolUse, UserPromptSubmit) was aborted
+    #: before every handler ran.
     blocked: bool = False
     #: True if any handler's result actually piped a mutation into the payload.
     mutated: bool = False

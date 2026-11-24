@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import pytest
+
 from openrouter_agent import call_model, step_count_is, tool
+from openrouter_agent.call_model import UNSUPPORTED_CALL_MODEL_OPTIONS
 from tests._fixtures import MemoryStateAccessor, QueuedClient, text_response, tool_call_response, usage_block
 
 
@@ -106,3 +109,11 @@ async def test_user_input_persists_with_response_in_state() -> None:
     assert accessor.stored.status == "complete"
     assert accessor.stored.messages[0] == {"role": "user", "content": "hello"}
     assert accessor.stored.messages[-1]["type"] == "message"
+
+
+async def test_unsupported_upstream_options_are_refused_instead_of_sent() -> None:
+    for key in UNSUPPORTED_CALL_MODEL_OPTIONS:
+        client = QueuedClient([])
+        with pytest.raises(NotImplementedError, match=key):
+            call_model(client, {"model": "m", "input": "hi", key: True})
+        assert client.requests == []

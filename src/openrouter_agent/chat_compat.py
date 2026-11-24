@@ -27,6 +27,30 @@ def from_chat_messages(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str, 
                     "output": _content_to_string(msg.get("content")),
                 }
             )
+        elif role == "assistant":
+            content = _content_to_string(msg.get("content"))
+            tool_calls = msg.get("tool_calls") or msg.get("toolCalls") or []
+            # Skip the message item only when there is no content AND there are
+            # tool calls to emit in its place. A content-less assistant message
+            # with no tool calls still round-trips as an empty message.
+            if content or not tool_calls:
+                output.append({"type": "message", "role": role, "content": content})
+            # One function_call item per tool call. The chat format's
+            # `function.arguments` is already a JSON string, so it is
+            # forwarded as-is.
+            for call in tool_calls:
+                function = get_field(call, "function", {}) or {}
+                call_id = get_field(call, "id")
+                output.append(
+                    {
+                        "type": "function_call",
+                        "callId": call_id,
+                        "id": call_id,
+                        "name": get_field(function, "name"),
+                        "arguments": get_field(function, "arguments"),
+                        "status": "completed",
+                    }
+                )
         else:
             output.append({"type": "message", "role": role, "content": _content_to_string(msg.get("content"))})
     return output

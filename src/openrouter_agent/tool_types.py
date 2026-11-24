@@ -59,6 +59,11 @@ class ConversationState:
     #: Optional so legacy (pre-version-field) states remain constructible;
     #: absence is treated as version 1 by `deserialize_conversation_state`.
     version: Optional[int] = None
+    #: Identity of a caller-forced `tool_choice` that already produced a tool
+    #: call in this logical run, so resumed follow-ups keep it relaxed to
+    #: `"auto"` (upstream `consumedForcedToolChoiceKey`). Additive within
+    #: state version 1; cleared when the run completes.
+    consumed_forced_tool_choice_key: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,8 @@ class ToolExecutionResult(TypedDict, total=False):
     #: locally-defined tools. See `is_mcp_tool` / `mark_mcp`.
     source: Literal["client", "mcp"]
     result: object
+    #: Kept for type compatibility; no longer populated (yields are broadcast
+    #: live as `tool.preliminary_result` events instead).
     preliminary_results: List[object]
     error: BaseException
 
@@ -163,6 +170,7 @@ class ToolResultEvent(TypedDict, total=False):
     #: otherwise. See `is_mcp_tool` / `mark_mcp`.
     source: Literal["client", "mcp"]
     result: object
+    #: Kept for type compatibility; the runtime no longer copies every yield here.
     preliminaryResults: List[object]
     preliminary_results: List[object]
     timestamp: int

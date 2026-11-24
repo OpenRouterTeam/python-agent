@@ -60,11 +60,17 @@ async def test_distinct_ids_still_run_only_the_approved_call() -> None:
     assert state.stored is not None
     assert [c.id for c in state.stored.pending_tool_calls or []] == ["call_a", "call_b"]
 
-    await call_model(
+    resumed = call_model(
         client, {"model": "m", "input": "continue", "tools": tools, "state": state, "approve_tool_calls": ["call_a"]}
-    ).get_response()
+    )
+    # Upstream 1.2.0 (#131): decisions covering only some pending calls leave
+    # the conversation paused on the undecided one instead of dropping it.
+    with pytest.raises(RuntimeError, match="awaiting approval.*call_b"):
+        await resumed.get_response()
 
     assert executed == ["read_config"]
+    assert len(client.requests) == 1
+    assert [c.id for c in state.stored.pending_tool_calls or []] == ["call_b"]
 
 
 async def test_auto_executed_batch_with_duplicate_ids_runs_nothing() -> None:

@@ -79,3 +79,68 @@ async def test_build_tool_call_stream_reconstructs_function_arguments() -> None:
     assert calls[0].id == "call_1"
     assert calls[0].name == "lookup"
     assert calls[0].arguments == {"q": "x"}
+
+
+# Ported from upstream src/lib/chat-compat.test.ts (#11, #41): assistant tool
+# calls become function_call items instead of being dropped.
+
+
+def test_from_chat_messages_emits_function_call_items_for_assistant_tool_calls() -> None:
+    converted = from_chat_messages(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city":"Austin"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"temp":30}'},
+        ]
+    )
+
+    # The content-less assistant message is replaced by its tool call; the
+    # already-serialized arguments are forwarded as-is.
+    assert converted == [
+        {
+            "type": "function_call",
+            "callId": "call_1",
+            "id": "call_1",
+            "name": "get_weather",
+            "arguments": '{"city":"Austin"}',
+            "status": "completed",
+        },
+        {"type": "function_call_output", "callId": "call_1", "output": '{"temp":30}'},
+    ]
+
+
+def test_from_chat_messages_keeps_text_and_tool_calls_in_order() -> None:
+    converted = from_chat_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "toolCalls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "b", "arguments": '{"x":1}'}},
+                ],
+            }
+        ]
+    )
+
+    assert [(item["type"], item.get("callId")) for item in converted] == [
+        ("message", None),
+        ("function_call", "call_a"),
+        ("function_call", "call_b"),
+    ]
+    assert converted[0]["content"] == "Let me check."
+
+
+def test_from_chat_messages_keeps_an_empty_assistant_message_without_tool_calls() -> None:
+    assert from_chat_messages([{"role": "assistant", "content": None}]) == [
+        {"type": "message", "role": "assistant", "content": ""}
+    ]

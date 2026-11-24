@@ -16,6 +16,25 @@ from .tool_types import (
 )
 
 
+def to_function_call_item(tool_call: ParsedToolCall) -> Dict[str, Any]:
+    """Convert an executor-shaped `ParsedToolCall` (whose `id` is the wire
+    `call_id` and whose `arguments` are already parsed) back into the
+    wire-shaped `function_call` item. `arguments` is always re-serialized, so
+    it is semantically equal to the wire arguments but not guaranteed
+    byte-identical."""
+    try:
+        arguments = json_dumps(tool_call.arguments)
+    except (TypeError, ValueError):
+        arguments = "{}"
+    return {
+        "type": "function_call",
+        "id": tool_call.id,
+        "callId": tool_call.id,
+        "name": tool_call.name,
+        "arguments": arguments,
+    }
+
+
 def convert_zod_to_json_schema(schema: Any) -> Dict[str, Any]:
     return schema_to_json_schema(schema)
 
@@ -44,10 +63,21 @@ def convert_tools_to_api_format(tools: Sequence[Tool]) -> List[Dict[str, Any]]:
             converted.append(dict(config) if isinstance(config, Mapping) else {})
             continue
         fn = get_tool_function(item)
+        wire_schema = fn.get("wire_input_schema")
+        # A caller-owned (manual tool) or server-supplied (MCP) JSON Schema is
+        # sent verbatim -- sanitized of `~`-prefixed keys, as a copy -- instead
+        # of one regenerated from `input_schema`.
+        if wire_schema is not None:
+            parameters = sanitize_json_schema(wire_schema)
+        else:
+            parameters = schema_to_json_schema(fn.get("input_schema"))
         api: Dict[str, Any] = {
             "type": "function",
             "name": fn.get("name"),
-            "parameters": schema_to_json_schema(fn.get("input_schema")),
+            # Passed through instead of hardcoded: `None` (null) leaves the
+            # provider default, `True`/`False` are sent as declared.
+            "strict": fn.get("strict"),
+            "parameters": parameters,
         }
         if fn.get("description") is not None:
             api["description"] = fn["description"]
@@ -84,7 +114,9 @@ async def execute_generator_tool(
 ) -> Dict[str, Any]:
     fn = get_tool_function(tool)
     source = "mcp" if is_mcp_tool(tool) else "client"
-    preliminary: List[Any] = []
+    # Yields are broadcast live via `on_preliminary_result`; they are not
+    # accumulated onto the result (upstream 1.0.0 dropped
+    # `preliminaryResults` to stop per-call memory growth).
     try:
         args = validate_schema(fn.get("input_schema"), tool_call.arguments)
         produced = fn["execute"](args, context)
@@ -99,7 +131,6 @@ async def execute_generator_tool(
         has_pending_output = False
 
         async def emit_preliminary(event: Any) -> None:
-            preliminary.append(event)
             if on_preliminary_result is not None:
                 await maybe_await(on_preliminary_result(tool_call.id, event))
 
@@ -138,7 +169,6 @@ async def execute_generator_tool(
             "tool_name": tool_call.name,
             "source": source,
             "result": final,
-            "preliminary_results": preliminary,
         }
     except Exception as exc:
         return {
@@ -146,7 +176,6 @@ async def execute_generator_tool(
             "tool_name": tool_call.name,
             "source": source,
             "result": None,
-            "preliminary_results": preliminary,
             "error": exc,
         }
 
@@ -183,6 +212,11 @@ async def execute_tool(
 ) -> Optional[Dict[str, Any]]:
     if not is_client_tool(tool):
         return None
+    # `tool_call` is part of the tool-facing context contract. A caller-provided
+    # one wins; otherwise thread the executed call, converted back to the
+    # wire-shaped `function_call` item, so every execution path carries it.
+    if turn_context is None or turn_context.get("tool_call") is None:
+        turn_context = {**dict(turn_context or {}), "tool_call": to_function_call_item(tool_call)}
     context = build_tool_execute_context(tool, turn_context, context_store, shared_context_schema)
     if is_hitl_tool(tool):
         return await execute_hitl_tool(tool, tool_call, context)

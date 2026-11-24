@@ -53,6 +53,27 @@ def _filter_schema_keys(schema: Any, value: Mapping[str, Any]) -> Dict[str, Any]
     return dict(value)
 
 
+def _parse_partial_against_schema(
+    schema: Any, partial: Mapping[str, Any], existing: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Filter a partial context update to the schema's known keys and return
+    the schema's *parsed* value for each updated key, so field transforms,
+    defaults and coercions apply to the stored value. The merged result
+    (existing values plus the update) is validated as a whole first, so
+    model-level validators are enforced before anything is stored. Raises on
+    invalid input; the caller leaves the stored context unchanged."""
+    filtered = _filter_schema_keys(schema, partial)
+    if schema is None:
+        return filtered
+    validated = validate_schema(schema, {**dict(existing), **filtered})
+    if hasattr(validated, "model_dump"):
+        dumped = validated.model_dump()
+        return {key: dumped[key] for key in filtered if key in dumped}
+    if isinstance(validated, Mapping):
+        return {key: validated[key] for key in filtered if key in validated}
+    return filtered
+
+
 class LiveContext(MappingABC):
     def __init__(self, getter: Callable[[], Dict[str, Any]]) -> None:
         self._getter = getter
@@ -113,12 +134,14 @@ def build_tool_execute_context(
         return store.get_tool_context(SHARED_CONTEXT_KEY)
 
     def set_context(partial: Mapping[str, Any]) -> None:
-        filtered = _filter_schema_keys(fn.get("context_schema"), partial)
-        store.merge_tool_context(name, filtered)
+        parsed = _parse_partial_against_schema(fn.get("context_schema"), partial, store.get_tool_context(name))
+        store.merge_tool_context(name, parsed)
 
     def set_shared_context(partial: Mapping[str, Any]) -> None:
-        filtered = _filter_schema_keys(shared_context_schema, partial)
-        store.merge_tool_context(SHARED_CONTEXT_KEY, filtered)
+        parsed = _parse_partial_against_schema(
+            shared_context_schema, partial, store.get_tool_context(SHARED_CONTEXT_KEY)
+        )
+        store.merge_tool_context(SHARED_CONTEXT_KEY, parsed)
 
     base.update(
         {

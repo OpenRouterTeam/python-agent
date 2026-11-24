@@ -184,6 +184,7 @@ def deserialize_conversation_state(raw_json: str) -> ConversationState:
         partial_response=partial_response,
         interrupted_by=parsed.get("interrupted_by"),
         version=CONVERSATION_STATE_VERSION,
+        consumed_forced_tool_choice_key=parsed.get("consumed_forced_tool_choice_key"),
     )
 
 
