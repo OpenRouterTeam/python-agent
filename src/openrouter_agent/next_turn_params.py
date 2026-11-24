@@ -5,11 +5,27 @@ from typing import Any, Dict, Mapping, Sequence
 from ._utils import maybe_await
 from .tool_types import ParsedToolCall, Tool, get_tool_function, is_client_tool
 
-NEXT_TURN_KEYS = ("input", "model", "models", "temperature", "max_output_tokens", "top_p", "top_k", "instructions")
+NEXT_TURN_KEYS = (
+    "input",
+    "tool_choice",
+    "model",
+    "models",
+    "temperature",
+    "max_output_tokens",
+    "top_p",
+    "top_k",
+    "instructions",
+)
 
 
 def build_next_turn_params_context(request: Mapping[str, Any]) -> Dict[str, Any]:
-    return {key: request.get(key) for key in NEXT_TURN_KEYS if key in request}
+    context = {key: request.get(key) for key in NEXT_TURN_KEYS if key in request}
+    # Always present (possibly None), like upstream: a tool computing the next
+    # `tool_choice` reads the current one to widen it rather than rebuild it --
+    # changing which tools are reachable without touching `tools`, so the
+    # provider's prompt-cache prefix survives.
+    context.setdefault("tool_choice", request.get("tool_choice"))
+    return context
 
 
 async def execute_next_turn_params_functions(

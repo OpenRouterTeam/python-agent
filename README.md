@@ -115,11 +115,13 @@ analysis = tool(
 )
 ```
 
-Manual tools are advertised to the model but not auto-executed.
+Manual tools are advertised to the model but not auto-executed. A manual tool may pass `wire_input_schema=` to send its own JSON Schema to the model instead of one generated from `input_schema`.
 
 ```python
 confirm = tool(name="confirm_action", input_schema=ConfirmInput, execute=False)
 ```
+
+Any client tool accepts `strict=True` / `strict=False` to request provider-enforced schema adherence on tool-call arguments; it is sent on the wire tool definition (omitted means `null`, the provider default). Pass `active_tools=[...names]` to `call_model` to send and execute only a subset of `tools` (server tools are always kept).
 
 HITL tools use `on_tool_called`; returning a value auto-resolves, returning `None` pauses with pending tool calls in state.
 
@@ -144,6 +146,8 @@ web = server_tool({"type": "web_search_2025_08_26", "max_results": 5})
 
 Use `require_approval` on a tool or `require_approval` on the request to pause sensitive calls before execution. Approval resume requires a state accessor with async `load()` and `save()` methods.
 
+Resume with `approve_tool_calls` / `reject_tool_calls`. Duplicate IDs are ignored (each approved call runs once), and an ID in both lists raises before anything runs. A paused conversation stays paused until every pending call has a decision: resuming without decisions (or with decisions for only some calls) sends no model request, and `get_response()`, `get_text()`, `get_tool_calls()` and the stream getters raise an error naming the pause and the pending call IDs, while `requires_approval()`, `get_pending_tool_calls()` and `get_state()` keep working. An `awaiting_hitl` conversation also resumes when `input` carries a `function_call_output` for a pending call.
+
 Manual tools (`execute=False`, no `on_tool_called`) pause the loop with status `"awaiting_client_tools"` when the model calls them, instead of silently dropping the call. Read the unresolved calls via `get_pending_tool_calls()` / `get_state()`, execute them yourself, and continue by calling `call_model` again with `function_call_output` items in `input`.
 
 For durable cross-process storage, serialize state with `serialize_conversation_state` / `deserialize_conversation_state` rather than storing raw dataclass fields. The wire format is versioned (`CONVERSATION_STATE_VERSION`); a version mismatch raises `UnsupportedStateVersionError` and malformed JSON raises `InvalidStateError`, so a store can never silently misinterpret a future shape.
@@ -162,6 +166,10 @@ result = call_model(
     },
 )
 ```
+
+## Usage
+
+`get_response()` returns the *final* round's response, so its `usage` covers one generation. `await result.get_usage()` returns totals across every model call the run made (`model_calls`, `input_tokens`, `output_tokens`, `total_tokens`, `cached_tokens`, `reasoning_tokens`, and `cost` when reported). It waits for the run and never raises: a failed or paused run returns what was accrued so far.
 
 ## Lifecycle Hooks
 
@@ -188,6 +196,8 @@ The built-ins mirror the TypeScript package and OR together when provided as a l
 - `max_tokens_used(n)`
 - `max_cost(dollars)`
 - `finish_reason_is(reason)`
+
+A forced `tool_choice` (`"required"`, a specific tool, or `allowed_tools` with `mode: "required"`) is relaxed to `"auto"` once it has produced a tool call in a run (including across approval and client-tool resumes), so the model can answer in text instead of calling tools until the step budget runs out. A tool's `next_turn_params` may set `tool_choice` for the next turn (for example, to widen an `allowed_tools` set without touching `tools`); `next_turn_params` only runs for calls whose tool body ran and returned without error. A response truncated at `max_output_tokens` executes none of its tool calls; the run ends with that `incomplete` response.
 
 When a stop condition fires while the model is still emitting tool calls, `call_model` makes one more turn with `tool_choice="none"` by default (tools stay in the request so the prompt-cache prefix survives) so the run ends with a natural-language answer. `allow_final_response` tunes this: `True` or omitted appends `DEFAULT_FINAL_RESPONSE_DIRECTIVE` as a user message, a non-empty string replaces the wording, `""` appends nothing, and `False` disables the extra turn entirely.
 

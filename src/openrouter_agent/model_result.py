@@ -7,7 +7,7 @@ import time
 import warnings
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ._utils import dump, get_field, is_async_iterable, json_dumps, maybe_await, sdk_request_kwargs
+from ._utils import dump, get_field, is_async_iterable, json_dumps, maybe_await, sdk_request_kwargs, validate_schema
 from .async_params import resolve_async_functions
 from .conversation_state import (
     append_to_messages,
@@ -15,7 +15,9 @@ from .conversation_state import (
     create_rejected_result,
     create_unsent_result,
     generate_conversation_id,
+    _parse_tool_arguments,
     partition_tool_calls,
+    tool_requires_approval,
     unsent_results_to_api_format,
     update_state,
 )
@@ -96,6 +98,61 @@ def _is_user_string_message(value: Any) -> bool:
     return isinstance(value, Mapping) and value.get("role") == "user" and isinstance(value.get("content"), str)
 
 
+def _describe_non_record(value: Any) -> str:
+    """Name a value's type the way upstream's `describeNonRecord` does, so
+    diagnostics read the same across ports."""
+    if value is None:
+        return "null"
+    if isinstance(value, (list, tuple)):
+        return "array"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "object"
+
+
+#: Most pending call IDs listed in a "conversation is paused" error. A state
+#: can hold any number of pending calls; the message stays readable and the
+#: full list is available from `get_pending_tool_calls()`.
+_MAX_PENDING_IDS_IN_ERROR = 10
+
+
+def _relax_forced_tool_choice(tool_choice: Any) -> Any:
+    """Relax a tool choice that *forces* a tool call, for follow-up turns after
+    a tool round has executed (upstream DEV-785).
+
+    - `"required"` -> `"auto"`
+    - a specific-tool object (`{"type": "function", "name": ...}`, ...) -> `"auto"`
+    - `allowed_tools` with `mode: "required"` -> same set with `mode: "auto"`
+      (the constraint on *which* tools may be used still applies; only the
+      force-a-call part is spent)
+    - `"auto"`, `"none"`, `allowed_tools` with `mode: "auto"`, and `None` pass
+      through unchanged.
+    """
+    if tool_choice is None or isinstance(tool_choice, str):
+        return "auto" if tool_choice == "required" else tool_choice
+    if get_field(tool_choice, "type") == "allowed_tools":
+        if get_field(tool_choice, "mode") == "required":
+            return {**dict(dump(tool_choice)), "mode": "auto"}
+        return tool_choice
+    return "auto"
+
+
+def _forced_tool_choice_key(tool_choice: Any) -> Optional[str]:
+    """Stable identity for a concrete forced choice; `None` means tools are not
+    forced."""
+    if tool_choice is None or isinstance(tool_choice, str):
+        forced = tool_choice == "required"
+    else:
+        forced = get_field(tool_choice, "type") != "allowed_tools" or get_field(tool_choice, "mode") == "required"
+    if not forced:
+        return None
+    return json.dumps(dump(tool_choice), sort_keys=True, separators=(",", ":"), default=str)
+
+
 def _find_latest_user_string_index(items: Sequence[Any]) -> int:
     for index in range(len(items) - 1, -1, -1):
         if _is_user_string_message(items[index]):
@@ -121,6 +178,7 @@ class ModelResult:
         self._hooks = self.options.get("hooks")
         self._session_id = ""
         self._resuming_from_client_tools = False
+        self._initial_request: Optional[Dict[str, Any]] = None
         self._session_start_emitted = False
         self._session_end_emitted = False
         self._all_tool_rounds = 0
@@ -138,6 +196,27 @@ class ModelResult:
             "state"
         ):
             raise ValueError("approve_tool_calls and reject_tool_calls require a state accessor")
+        # De-duplicate decisions so a call ID listed twice cannot execute an
+        # approval-gated tool twice, and refuse contradictory input outright:
+        # an ID that is both approved and rejected has no safe interpretation.
+        self._approved_ids: List[str] = list(dict.fromkeys(self.options.get("approve_tool_calls") or []))
+        self._rejected_ids: List[str] = list(dict.fromkeys(self.options.get("reject_tool_calls") or []))
+        rejected_set = set(self._rejected_ids)
+        conflicting = [call_id for call_id in self._approved_ids if call_id in rejected_set]
+        if conflicting:
+            raise ValueError(
+                f"Tool call IDs cannot be both approved and rejected: {', '.join(conflicting)}. "
+                "Pass each pending call ID in exactly one of approve_tool_calls or reject_tool_calls."
+            )
+        #: Set when a paused conversation was resumed without the decision it
+        #: owes: the run sends nothing and every getter reports the pause.
+        self._paused_without_decisions = False
+        #: Forced tool_choice consumed in this logical run (see
+        #: `_relax_forced_tool_choice`); persisted so resumes stay relaxed.
+        self._consumed_forced_key: Optional[str] = None
+
+    def _has_decisions(self) -> bool:
+        return bool(self._approved_ids or self._rejected_ids)
 
     # -- transport -----------------------------------------------------------
 
@@ -207,10 +286,39 @@ class ModelResult:
             return completed or {"id": "response_from_events", "output": []}
         return value
 
-    async def _send_and_track(self, request: Mapping[str, Any], turn_type: str, turn_number: int) -> Any:
-        """Send a request, coerce its response, and emit PostModelCall for it."""
+    async def _send_and_track(
+        self,
+        request: Mapping[str, Any],
+        turn_type: str,
+        turn_number: int,
+        *,
+        caller_tool_choice: bool = True,
+    ) -> Any:
+        """Send a request, coerce its response, and emit PostModelCall for it.
+
+        With `caller_tool_choice` (every dispatch except engine-owned
+        overrides such as the forced-final `tool_choice: "none"` turn), the
+        caller-configured `tool_choice` goes through the forced-choice policy:
+        once a forced choice (`"required"`, a specific tool, or
+        `allowed_tools` with `mode: "required"`) has produced a tool call in
+        this logical run, it is relaxed to `"auto"` on later turns so the model
+        can answer in text instead of calling tools until the step budget runs
+        out. A choice is consumed only when the response that carried it
+        called a tool; an unforced choice re-arms it.
+        """
         started = time.monotonic()
+        configured_key: Optional[str] = None
+        if caller_tool_choice and "tool_choice" in request:
+            configured = request.get("tool_choice")
+            configured_key = _forced_tool_choice_key(configured)
+            if configured_key is not None and configured_key == self._consumed_forced_key:
+                request = {**dict(request), "tool_choice": _relax_forced_tool_choice(configured)}
         response = await self._coerce_response(await self._send(request))
+        if caller_tool_choice:
+            if configured_key is None:
+                self._consumed_forced_key = None
+            elif configured_key != self._consumed_forced_key and extract_tool_calls_from_response(response):
+                self._consumed_forced_key = configured_key
         await self._emit_post_model_call(response, started, turn_type, turn_number)
         return response
 
@@ -231,16 +339,103 @@ class ModelResult:
         if accessor is None:
             return
         loaded = await maybe_await(accessor.load())
+        if loaded is not None:
+            self._consumed_forced_key = loaded.consumed_forced_tool_choice_key
         self._resuming_from_client_tools = bool(loaded is not None and loaded.status == "awaiting_client_tools")
         self._state = loaded or create_initial_state()
+        if (
+            loaded is not None
+            and loaded.status in ("awaiting_approval", "awaiting_hitl")
+            and not self._has_decisions()
+            and await self._stays_paused_without_decisions(loaded)
+        ):
+            # Paused for a human decision but none was supplied: stay paused.
+            # Falling through would flip the status to "in_progress" and send
+            # a fresh model request, advancing the conversation past calls
+            # that still owe a decision. Every response/stream getter surfaces
+            # this as an explicit "awaiting ..." error (see `_paused_error`).
+            self._paused_without_decisions = True
+            return
         if not self._resuming_from_client_tools:
             self._state = update_state(self._state, {"status": "in_progress"})
             await maybe_await(accessor.save(self._state))
+
+    async def _resolve_initial_request(self) -> Dict[str, Any]:
+        """Resolve the turn-0 request exactly once. Caller-supplied async
+        parameter functions (including a function-valued `input`) must not run
+        twice when the paused-resume check needs the resolved input before the
+        normal initialization path does."""
+        if self._initial_request is None:
+            self._initial_request = await resolve_async_functions(self.options["request"], {"number_of_turns": 0})
+        return self._initial_request
+
+    async def _stays_paused_without_decisions(self, loaded: Any) -> bool:
+        """Whether a state loaded as `awaiting_approval` / `awaiting_hitl` stays
+        paused when the caller supplied no approve/reject decisions.
+
+        - No pending calls: nothing is owed a decision, so continue with a
+          normal request instead of stranding the conversation.
+        - `awaiting_approval`: always paused. Only a recorded approve/reject
+          decision releases an approval gate; a caller-supplied
+          `function_call_output` for the gated call does not.
+        - `awaiting_hitl`: paused unless `input` carries a
+          `function_call_output` for a pending call -- the documented way to
+          resume a HITL tool (it goes through `on_response_received`).
+        """
+        pending_ids = {call.id for call in (loaded.pending_tool_calls or [])}
+        if not pending_ids:
+            return False
+        if loaded.status != "awaiting_hitl":
+            return True
+        input_value = (await self._resolve_initial_request()).get("input")
+        if not isinstance(input_value, list):
+            return True
+        return not any(
+            get_field(item, "type") == "function_call_output"
+            and (get_field(item, "callId") or get_field(item, "call_id")) in pending_ids
+            for item in input_value
+        )
+
+    def _paused_error(self) -> Optional[Exception]:
+        """Describe the pause when the conversation is waiting on the caller
+        (`awaiting_approval` / `awaiting_hitl`), or `None` when it is not."""
+        state = self._state
+        status = getattr(state, "status", None)
+        if status not in ("awaiting_approval", "awaiting_hitl"):
+            return None
+        pending_ids = [call.id for call in (state.pending_tool_calls or [])]
+        shown = ", ".join(pending_ids[:_MAX_PENDING_IDS_IN_ERROR])
+        hidden = len(pending_ids) - _MAX_PENDING_IDS_IN_ERROR
+        id_list = f"{shown}, ... ({hidden} more)" if hidden > 0 else shown
+        if status == "awaiting_approval":
+            what = "awaiting approval"
+            how_to_resume = "Resume with approve_tool_calls and/or reject_tool_calls for the pending calls."
+        else:
+            what = "awaiting HITL input"
+            how_to_resume = (
+                "Resume by passing a function_call_output for a pending call ID in input, "
+                "or with approve_tool_calls / reject_tool_calls (approving re-runs on_tool_called)."
+            )
+        input_value = self.options["request"].get("input")
+        input_supplied = callable(input_value) or bool(input_value)
+        message = (
+            f"Conversation is {what} (status '{status}'); no response is available. "
+            f"Pending tool call IDs: {id_list}. {how_to_resume} "
+            "Use requires_approval() or get_pending_tool_calls() to inspect a paused conversation."
+        )
+        if input_supplied:
+            message += " The input supplied with this call was not sent to the model and was not saved to state."
+        return RuntimeError(message)
 
     async def _save_state(self, **updates: Any) -> None:
         accessor = self.options.get("state")
         if accessor is None or self._state is None:
             return
+        if updates.get("status") == "complete":
+            # A later conversational turn is a new logical run and may force
+            # its first tool call again.
+            self._consumed_forced_key = None
+        updates["consumed_forced_tool_choice_key"] = self._consumed_forced_key
         self._state = update_state(self._state, updates)
         await maybe_await(accessor.save(self._state))
 
@@ -263,7 +458,7 @@ class ModelResult:
             # the only copy if that request failed.
             updates["pending_tool_calls"] = None
             updates["status"] = "in_progress"
-            self._resuming_from_client_tools = False
+        self._resuming_from_client_tools = False
         await self._save_state(**updates)
 
     async def _save_tool_outputs_to_state(self, outputs: Sequence[Any]) -> None:
@@ -287,14 +482,31 @@ class ModelResult:
         await self._save_state(pending_tool_calls=list(unresolved_calls), status="awaiting_client_tools")
 
     def _validate_final_response(self, response: Any, allow_empty_output: bool = False) -> None:
+        """Validate the final response has required fields.
+
+        Message prefixes (`Invalid final response: missing required fields`,
+        `Invalid final response: empty or invalid output`) are load-bearing --
+        callers and tests match on them. Detail is appended after an em dash;
+        never reword the prefixes. This is a pure array-length check, so a
+        `function_call`-only output passes.
+        """
         response_id = get_field(response, "id")
         output = get_field(response, "output")
         if not response_id or output is None:
-            raise ValueError("Invalid final response: missing required fields")
+            missing = [name for name, absent in (("id", not response_id), ("output", output is None)) if absent]
+            raise ValueError(f"Invalid final response: missing required fields: {', '.join(missing)}")
         if not isinstance(output, list) or len(output) == 0:
             if allow_empty_output:
                 return
-            raise ValueError("Invalid final response: empty or invalid output")
+            if isinstance(output, list):
+                detail = (
+                    f'output array is empty (length 0) for response "{response_id}". The model returned no '
+                    "output items. This can happen when the provider returns an empty final turn; see the "
+                    "strict_final_response/allow_final_response options"
+                )
+            else:
+                detail = f'output is not an array (got {_describe_non_record(output)}) for response "{response_id}"'
+            raise ValueError(f"Invalid final response: empty or invalid output — {detail}")
 
     # -- hooks -----------------------------------------------------------
 
@@ -326,25 +538,34 @@ class ModelResult:
         self._session_end_emitted = True
         payload: Dict[str, Any] = {"reason": reason}
         if self._session_usage["model_calls"] > 0:
-            total_usage = {
-                "model_calls": self._session_usage["model_calls"],
-                "input_tokens": self._session_usage["input_tokens"],
-                "output_tokens": self._session_usage["output_tokens"],
-                "total_tokens": self._session_usage["total_tokens"],
-                "cached_tokens": self._session_usage["cached_tokens"],
-                "reasoning_tokens": self._session_usage["reasoning_tokens"],
-            }
-            if self._session_usage["has_cost"]:
-                total_usage["cost"] = self._session_usage["cost"]
-            payload["total_usage"] = total_usage
+            payload["total_usage"] = self._snapshot_session_usage()
         try:
             await self._hooks.emit("SessionEnd", payload, session_id=self._session_id)
         except Exception as error:  # noqa: BLE001 - teardown must never mask the real error
             warnings.warn(f"[SessionEnd] error during session teardown: {error}", stacklevel=2)
 
+    def _snapshot_session_usage(self) -> Dict[str, Any]:
+        """Materialize the running session aggregate. `cost` is present only
+        when at least one response reported it (a summed `0` from cost-less
+        responses would read as "free" rather than "unknown"). Single source
+        of truth for both `SessionEnd.total_usage` and `get_usage()`, so the
+        two cannot drift."""
+        totals: Dict[str, Any] = {
+            "model_calls": self._session_usage["model_calls"],
+            "input_tokens": self._session_usage["input_tokens"],
+            "output_tokens": self._session_usage["output_tokens"],
+            "total_tokens": self._session_usage["total_tokens"],
+            "cached_tokens": self._session_usage["cached_tokens"],
+            "reasoning_tokens": self._session_usage["reasoning_tokens"],
+        }
+        if self._session_usage["has_cost"]:
+            totals["cost"] = self._session_usage["cost"]
+        return totals
+
     async def _emit_post_model_call(self, response: Any, started_at: float, turn_type: str, turn_number: int) -> None:
-        if not self._hooks:
-            return
+        # Accumulation runs unconditionally -- before the hooks short-circuit --
+        # because `get_usage()` surfaces these totals to callers who configured
+        # no hooks at all. Only the hook emit is gated on a HooksManager.
         usage = _extract_model_call_usage(get_field(response, "usage"))
         self._session_usage["model_calls"] += 1
         if usage:
@@ -356,6 +577,8 @@ class ModelResult:
             if usage.get("cost") is not None:
                 self._session_usage["cost"] += usage["cost"]
                 self._session_usage["has_cost"] = True
+        if not self._hooks:
+            return
         payload = {
             "session_id": self._session_id,
             "response_id": get_field(response, "id", ""),
@@ -649,7 +872,7 @@ class ModelResult:
             tool = self._find_tool(call.name, tools)
             if not tool or not is_auto_resolvable_tool(tool):
                 continue
-            outcome = await self._run_tool_with_hooks(tool, call, {**turn_context, "tool_call": call})
+            outcome = await self._run_tool_with_hooks(tool, call, turn_context)
             if outcome["type"] == "parse_error":
                 results.append(create_rejected_result(call.id, call.name, outcome["error_message"]))
             elif outcome["type"] == "hook_blocked":
@@ -662,7 +885,11 @@ class ModelResult:
             else:
                 effective_call = outcome["call"]
                 results.append(
-                    create_unsent_result(effective_call.id, effective_call.name, outcome["result"].get("result"))
+                    create_unsent_result(
+                        effective_call.id,
+                        effective_call.name,
+                        await self._unsent_model_output(effective_call, tool, outcome["result"].get("result")),
+                    )
                 )
         return results
 
@@ -677,21 +904,46 @@ class ModelResult:
             }
         )
 
+    def _parsed_tool_input(self, tool: Tool, call: ParsedToolCall) -> Any:
+        """`call.arguments` is the JSON-parsed wire payload. Parse it with the
+        tool's `input_schema` so `to_model_output` sees the same input
+        `execute` got; fall back to the raw arguments when parsing fails."""
+        try:
+            return validate_schema(get_tool_function(tool).get("input_schema"), call.arguments)
+        except Exception:
+            return call.arguments
+
+    async def _apply_to_model_output(self, call: ParsedToolCall, tool: Tool, value: Any) -> Tuple[bool, str, Any]:
+        """Run the tool's `to_model_output` mapper, if any. Returns
+        `(applied, type, value)` where `type` is `"content"` or `"json"`."""
+        converter = get_tool_function(tool).get("to_model_output")
+        if not converter:
+            return False, "", None
+        converted = await maybe_await(converter({"output": value, "input": self._parsed_tool_input(tool, call)}))
+        if isinstance(converted, Mapping) and converted.get("type") == "content":
+            return True, "content", converted.get("value", [])
+        if isinstance(converted, Mapping) and converted.get("type") == "json":
+            return True, "json", converted.get("value")
+        return False, "", None
+
+    async def _unsent_model_output(self, call: ParsedToolCall, tool: Tool, output: Any) -> Any:
+        """Unsent results are serialized by `unsent_results_to_api_format`,
+        which does not know about `to_model_output`. Apply it here so resumed
+        and approved calls send the model the same output as the main loop."""
+        applied, _kind, value = await self._apply_to_model_output(call, tool, output)
+        return value if applied else output
+
     async def _tool_result_to_output(
         self, call: ParsedToolCall, tool: Tool, result: Mapping[str, Any]
     ) -> Dict[str, Any]:
         if result.get("error") is not None:
             output: Any = json_dumps({"error": str(result["error"])})
         else:
-            converter = get_tool_function(tool).get("to_model_output")
-            if converter:
-                converted = await maybe_await(converter({"output": result.get("result"), "input": call.arguments}))
-                if isinstance(converted, Mapping) and converted.get("type") == "content":
-                    output = converted.get("value", [])
-                elif isinstance(converted, Mapping) and converted.get("type") == "json":
-                    output = json_dumps(converted.get("value"))
-                else:
-                    output = json_dumps(result.get("result"))
+            applied, kind, value = await self._apply_to_model_output(call, tool, result.get("result"))
+            if applied and kind == "content":
+                output = value
+            elif applied:
+                output = json_dumps(value)
             else:
                 output = json_dumps(result.get("result"))
         return {"type": "function_call_output", "id": f"output_{call.id}", "callId": call.id, "output": output}
@@ -711,12 +963,16 @@ class ModelResult:
         hooks = self._hooks
         try:
             await self._load_state()
+            if self._paused_without_decisions:
+                # No request, no state write, no SessionStart: the getters
+                # report the pause (see `_paused_error`).
+                return None
             self._session_id = self._state.id if self._state is not None else generate_conversation_id()
 
             tools: Sequence[Tool] = self.options.get("tools") or []
             await self._emit_session_start(tools)
 
-            request = await resolve_async_functions(self.options["request"], {"number_of_turns": 0})
+            request = dict(await self._resolve_initial_request())
             request["stream"] = True
             base_input = request.get("input")
 
@@ -745,22 +1001,22 @@ class ModelResult:
                 fresh_input = hooked_array[len(historical_function_calls) :]
             if self._state is not None:
                 request["input"] = append_to_messages(historical_input, fresh_input)
-                if not (
-                    self._state.pending_tool_calls
-                    and (self.options.get("approve_tool_calls") or self.options.get("reject_tool_calls"))
-                ):
+                if not (self._state.pending_tool_calls and self._has_decisions()):
                     self._fresh_items_for_state = list(fresh_input)
             elif fresh_input:
                 request["input"] = fresh_input
 
             current_request = request
             is_resume_turn = self._resuming_from_client_tools
-            if (
-                self._state is not None
-                and self._state.pending_tool_calls
-                and (self.options.get("approve_tool_calls") or self.options.get("reject_tool_calls"))
-            ):
-                current_request = await self._build_resume_request(request)
+            if self._state is not None and self._state.pending_tool_calls and self._has_decisions():
+                resume_request = await self._build_resume_request(request)
+                if resume_request is None:
+                    # Decisions covered only some of the pending calls (or an
+                    # approved call needs re-approval after a PreToolUse
+                    # mutation, or an approved HITL call paused again): the
+                    # conversation stays paused and no request is sent.
+                    return None
+                current_request = resume_request
                 is_resume_turn = True
 
             final_response = None
@@ -786,7 +1042,14 @@ class ModelResult:
                     turn_type = "tool_round"
                 pending_final_directive = False
 
-                response = await self._send_and_track(current_request, turn_type, turn_number)
+                response = await self._send_and_track(
+                    current_request,
+                    turn_type,
+                    turn_number,
+                    # The forced-final turn's tool_choice "none" is an
+                    # engine-owned override, not the caller's policy.
+                    caller_tool_choice=turn_type != "final",
+                )
                 await self._append_event(
                     {
                         "type": "turn.end",
@@ -838,6 +1101,38 @@ class ModelResult:
                     allow_final_response = self.options.get("allow_final_response")
                     final_response_enabled = allow_final_response is not False
                     resolvable_pending = [c for c in calls if self._call_is_auto_resolvable(c, tools)]
+                    if not final_response_enabled and turn_number == 0 and resolvable_pending:
+                        # With allow_final_response=False a met stop_when means
+                        # no tool from this response runs. The first response
+                        # still goes through the approval check (upstream
+                        # evaluates it before the loop), but pausing for a gated
+                        # call must not execute its auto-approved siblings: they
+                        # are saved as skipped results so the paused turn stays
+                        # well-formed for the resume request.
+                        self._assert_unique_call_ids(calls, tools)
+                        turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
+                        requires_approval, executable_calls, gate_results = await self._resolve_approval_gate(
+                            calls, tools, turn_context
+                        )
+                        if requires_approval:
+                            if self.options.get("state") is None:
+                                names = ", ".join(call.name for call in requires_approval)
+                                raise ValueError(
+                                    f"Tool(s) require approval but no state accessor is configured: {names}"
+                                )
+                            resolved_gate_ids = {result.call_id for result in gate_results}
+                            gate_results.extend(
+                                create_rejected_result(call.id, call.name, "Tool execution skipped: stop condition met")
+                                for call in executable_calls
+                                if call.id not in resolved_gate_ids
+                            )
+                            await self._save_state(
+                                pending_tool_calls=requires_approval,
+                                unsent_tool_results=gate_results or None,
+                                status="awaiting_approval",
+                            )
+                            self._final_response = final_response
+                            return final_response
                     if final_response_enabled and resolvable_pending:
                         self._assert_unique_call_ids(calls, tools)
                         turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
@@ -863,6 +1158,7 @@ class ModelResult:
 
                         final_outputs: List[Any] = unsent_results_to_api_format(gate_results)
                         resolved_gate_ids = {result.call_id for result in gate_results}
+                        final_executed_calls: List[ParsedToolCall] = []
                         for call in executable_calls:
                             if call.id in resolved_gate_ids:
                                 continue
@@ -876,6 +1172,8 @@ class ModelResult:
                                 else:
                                     result = outcome["result"]
                                     if result is not None:
+                                        if result.get("error") is None:
+                                            final_executed_calls.append(outcome["call"])
                                         output = await self._tool_result_to_output(
                                             outcome["call"], matching_tool, result
                                         )
@@ -898,6 +1196,14 @@ class ModelResult:
                                     }
                                 )
                         await self._save_tool_outputs_to_state(final_outputs)
+                        # Apply nextTurnParams from the calls that actually ran
+                        # so they affect the final text-coercion request
+                        # (mirrors the in-loop behavior).
+                        final_params = await execute_next_turn_params_functions(
+                            final_executed_calls, tools, current_request
+                        )
+                        if final_params:
+                            current_request = apply_next_turn_params_to_request(current_request, final_params)
                         current_request = self._build_final_request(
                             current_request, response, final_outputs, allow_final_response
                         )
@@ -937,11 +1243,9 @@ class ModelResult:
                     tool = self._find_tool(call.name, tools)
                     if not tool or not is_auto_resolvable_tool(tool):
                         continue
-                    turn_context = {
-                        "number_of_turns": turn_number + 1,
-                        "tool_call": call,
-                        "turn_request": current_request,
-                    }
+                    # `tool_call` is threaded into the execute context by the
+                    # executor from the call it actually runs (wire shape).
+                    turn_context = {"number_of_turns": turn_number + 1, "turn_request": current_request}
                     outcome = await self._run_tool_with_hooks(tool, call, turn_context)
                     if outcome["type"] == "parse_error":
                         await self._append_event(
@@ -980,14 +1284,18 @@ class ModelResult:
                             "result": {"error": str(result["error"])}
                             if result.get("error") is not None
                             else result.get("result"),
-                            "preliminaryResults": result.get("preliminary_results"),
-                            "preliminary_results": result.get("preliminary_results"),
                             "timestamp": _now_ms(),
                         }
                     )
                     output = await self._tool_result_to_output(effective_call, tool, result)
                     outputs.append(output)
-                    executed_calls.append(effective_call)
+                    if result.get("error") is None:
+                        # Only calls whose tool body ran and returned without
+                        # error may drive nextTurnParams, with the input the
+                        # tool actually ran on (including a PreToolUse
+                        # mutation). Blocked, invalid, or failed calls must
+                        # not change the next request.
+                        executed_calls.append(effective_call)
                     self._tool_outputs.append(output)
                     await self._append_event({"type": "tool.call_output", "output": output, "timestamp": _now_ms()})
                     step.tool_results.append(result)
@@ -1074,36 +1382,110 @@ class ModelResult:
                 )
             seen.add(call.id)
 
-    async def _build_resume_request(self, request: Mapping[str, Any]) -> Dict[str, Any]:
+    async def _build_resume_request(self, request: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        """Apply approve/reject decisions to the persisted pending calls.
+
+        Returns the resume request, or `None` when the conversation stays
+        paused: a pending call received no decision, an approved call whose
+        PreToolUse-mutated arguments need their own approval is pending
+        again, or an approved HITL call paused again.
+        """
         self._fresh_items_for_state = []
-        approved = set(self.options.get("approve_tool_calls") or [])
-        rejected = set(self.options.get("reject_tool_calls") or [])
-        outputs: List[Any] = []
-        if self._state is not None and self._state.unsent_tool_results:
-            outputs.extend(unsent_results_to_api_format(self._state.unsent_tool_results))
-        pending: List[ParsedToolCall] = self._state.pending_tool_calls if self._state is not None else []
-        unsent_ids = [result.call_id for result in (self._state.unsent_tool_results or [])] if self._state else []
-        seen_ids: set[str] = set(unsent_ids)
-        for call in pending or []:
+        tools: Sequence[Tool] = self.options.get("tools") or []
+        unsent: List[UnsentToolResult] = list(self._state.unsent_tool_results or []) if self._state else []
+        pending: List[ParsedToolCall] = list(self._state.pending_tool_calls or []) if self._state is not None else []
+        seen_ids: set[str] = {result.call_id for result in unsent}
+        for call in pending:
             if call.id in seen_ids:
                 raise ValueError(
                     f'Saved state has more than one tool call with call_id "{call.id}"; '
                     "refusing to resume because approvals are matched to calls by call_id."
                 )
             seen_ids.add(call.id)
-        for call in pending or []:
-            tool = self._find_tool(call.name, self.options.get("tools") or [])
-            if call.id in rejected:
-                outputs.append(self._rejected_output(call.id, "Tool call rejected by user"))
-            elif call.id in approved and tool and is_auto_resolvable_tool(tool):
-                turn_context = {"number_of_turns": 0}
-                outcome = await self._run_tool_with_hooks(tool, call, turn_context)
-                if outcome["type"] == "parse_error":
-                    outputs.append(self._rejected_output(call.id, outcome["error_message"]))
-                elif outcome["type"] == "hook_blocked":
-                    outputs.append(self._rejected_output(call.id, outcome["reason"]))
-                elif outcome["result"] is not None:
-                    outputs.append(await self._tool_result_to_output(outcome["call"], tool, outcome["result"]))
+
+        # numberOfTurns is 1-indexed after the initial request (upstream
+        # `allToolExecutionRounds.length + 1` on a fresh run).
+        turn_context: Dict[str, Any] = {"number_of_turns": 1}
+        hitl_paused_ids: set[str] = set()
+        second_gate: Dict[str, ParsedToolCall] = {}
+        # Each decision list is de-duplicated in __init__, so an approved
+        # call executes at most once per resume.
+        for call_id in self._approved_ids:
+            found = next((candidate for candidate in pending if candidate.id == call_id), None)
+            if found is None:
+                continue
+            call = found
+            tool = self._find_tool(call.name, tools)
+            if not tool or not is_auto_resolvable_tool(tool):
+                unsent.append(create_rejected_result(call.id, call.name, "Tool not found or not executable"))
+                continue
+
+            if self._hooks and call.pre_tool_use_applied is not True and not isinstance(call.arguments, str):
+                prepared = await self._prepare_after_initial_approval(call, tool, tools, turn_context)
+                if prepared[0] == "blocked":
+                    unsent.append(create_rejected_result(call.id, call.name, prepared[1]))
+                    continue
+                if prepared[0] == "pending":
+                    second_gate[call.id] = prepared[2]
+                    continue
+                call = prepared[2]
+
+            outcome = await self._run_tool_with_hooks(tool, call, turn_context)
+            if outcome["type"] == "parse_error":
+                unsent.append(create_rejected_result(call.id, call.name, outcome["error_message"]))
+            elif outcome["type"] == "hook_blocked":
+                unsent.append(create_rejected_result(call.id, call.name, outcome["reason"]))
+            elif outcome["result"] is None:
+                # HITL tool paused on approval -- keep the call visible via
+                # pending_tool_calls (status becomes awaiting_hitl below).
+                hitl_paused_ids.add(call.id)
+            elif outcome["result"].get("error") is not None:
+                unsent.append(create_rejected_result(call.id, call.name, str(outcome["result"]["error"])))
+            else:
+                effective_call = outcome["call"]
+                unsent.append(
+                    create_unsent_result(
+                        call.id,
+                        call.name,
+                        await self._unsent_model_output(effective_call, tool, outcome["result"].get("result")),
+                    )
+                )
+
+        for call_id in self._rejected_ids:
+            rejected = next((candidate for candidate in pending if candidate.id == call_id), None)
+            if rejected is None:
+                continue
+            # Upstream also emits PostToolUseFailure here for calls whose
+            # PreToolUse ran after an initial approval. This port still runs
+            # PreToolUse *before* the approval gate (the upstream two-phase
+            # gate is not ported yet), so `pre_tool_use_applied` is set on
+            # every held call and emitting here would fire the hook where
+            # upstream does not. Left out until the two-phase gate lands.
+            unsent.append(create_rejected_result(rejected.id, rejected.name, "Rejected by user"))
+
+        processed = {
+            call_id
+            for call_id in [*self._approved_ids, *self._rejected_ids]
+            if call_id not in hitl_paused_ids and call_id not in second_gate
+        }
+        remaining = [second_gate.get(call.id, call) for call in pending if call.id not in processed]
+        unresolved_approvals = [call for call in remaining if call.id not in hitl_paused_ids]
+        if unresolved_approvals:
+            next_status = "awaiting_approval"
+        elif hitl_paused_ids:
+            next_status = "awaiting_hitl"
+        else:
+            next_status = "in_progress"
+
+        if next_status != "in_progress":
+            await self._save_state(
+                pending_tool_calls=remaining or None,
+                unsent_tool_results=unsent or None,
+                status=next_status,
+            )
+            return None
+
+        outputs = unsent_results_to_api_format(unsent)
         updated_messages = append_to_messages(self._state.messages, outputs) if self._state is not None else outputs
         await self._save_state(
             messages=updated_messages,
@@ -1112,6 +1494,86 @@ class ModelResult:
             status="in_progress",
         )
         return {**dict(request), "input": updated_messages, "stream": True}
+
+    async def _prepare_after_initial_approval(
+        self,
+        call: ParsedToolCall,
+        tool: Tool,
+        tools: Sequence[Tool],
+        turn_context: Mapping[str, Any],
+    ) -> Tuple[str, str, ParsedToolCall]:
+        """Run PreToolUse for an approved call that has not been through it.
+
+        The human approved the arguments they saw. If PreToolUse rewrites
+        them, the rewritten call needs its own approval check: returns
+        `("ready", "", call)` to execute, `("blocked", reason, call)` to reject,
+        or `("pending", "", mutated_call)` to pause again on the mutated
+        arguments (marked `pre_tool_use_applied` so the hook does not run a
+        second time on the next resume).
+        """
+        assert self._hooks is not None
+        original_input = call.arguments if isinstance(call.arguments, dict) else {}
+        pre = await self._hooks.emit(
+            "PreToolUse",
+            {"tool_name": call.name, "tool_input": original_input},
+            tool_name=call.name,
+            session_id=self._session_id,
+        )
+        if pre.blocked:
+            block = next((result.get("block") for result in pre.results if result.get("block")), None)
+            return "blocked", block if isinstance(block, str) else "Blocked by PreToolUse hook", call
+        if not pre.mutated:
+            return "ready", "", dataclasses.replace(call, pre_tool_use_applied=True)
+        mutated = dataclasses.replace(call, arguments=pre.final_payload.get("tool_input"), pre_tool_use_applied=True)
+        # A mutation that no longer satisfies the schema is refused rather
+        # than executed or re-queued (upstream `validatePreparedMutation`).
+        ok, parsed = _parse_tool_arguments(tool, mutated.arguments)
+        if not ok or not isinstance(parsed, Mapping):
+            invalid = f'PreToolUse produced invalid input for "{call.name}"'
+            await self._emit_prepared_failure(mutated, invalid)
+            return "blocked", invalid, mutated
+        if not await self._mutated_input_requires_approval(mutated, tools, turn_context):
+            return "ready", "", mutated
+        decision, reason = await self._emit_permission_request(mutated, tools)
+        if decision == "allow":
+            return "ready", "", mutated
+        if decision == "deny":
+            denial = reason or "Denied by PermissionRequest hook"
+            await self._emit_prepared_failure(mutated, denial)
+            return "blocked", denial, mutated
+        return "pending", "", mutated
+
+    async def _mutated_input_requires_approval(
+        self, call: ParsedToolCall, tools: Sequence[Tool], turn_context: Mapping[str, Any]
+    ) -> bool:
+        """Re-check approval for PreToolUse-mutated arguments. Only
+        input-dependent checks can change their answer: a call-level
+        `require_approval` function, or a function-valued tool-level
+        `require_approval`. A blanket `require_approval=True` was already
+        satisfied by the human's approval, so the mutated call runs."""
+        call_level = self.options.get("require_approval")
+        if callable(call_level):
+            return await tool_requires_approval(call, tools, turn_context, call_level)
+        tool = self._find_tool(call.name, tools)
+        if tool is None or not callable(get_tool_function(tool).get("require_approval")):
+            return False
+        return await tool_requires_approval(call, tools, turn_context)
+
+    async def _emit_prepared_failure(self, call: ParsedToolCall, reason: str) -> None:
+        """PostToolUseFailure for a call that went through PreToolUse but will
+        not execute (invalid mutation, PermissionRequest deny, user reject)."""
+        if not self._hooks:
+            return
+        await self._hooks.emit(
+            "PostToolUseFailure",
+            {
+                "tool_name": call.name,
+                "tool_input": call.arguments if isinstance(call.arguments, dict) else {},
+                "error": reason,
+            },
+            tool_name=call.name,
+            session_id=self._session_id,
+        )
 
     async def _iter_events_live(self) -> AsyncIterator[Any]:
         self._ensure_task()
@@ -1170,12 +1632,15 @@ class ModelResult:
         if new_request.get("tools") is not None:
             new_request["tool_choice"] = "none"
         new_request["stream"] = True
-        return await self._send_and_track(new_request, "retry", turn_number)
+        return await self._send_and_track(new_request, "retry", turn_number, caller_tool_choice=False)
 
     # -- public streaming/result surface ------------------------------------
 
     async def get_response(self) -> Any:
-        return await self._ensure_task()
+        response = await self._ensure_task()
+        if response is None:
+            raise self._paused_error() or RuntimeError("Response not available")
+        return response
 
     async def get_text(self) -> str:
         response = await self.get_response()
@@ -1229,8 +1694,6 @@ class ModelResult:
                     "tool_call_id": get_field(event, "tool_call_id", get_field(event, "toolCallId")),
                     "source": get_field(event, "source", "client"),
                     "result": get_field(event, "result"),
-                    "preliminaryResults": get_field(event, "preliminaryResults"),
-                    "preliminary_results": get_field(event, "preliminary_results"),
                 }
             elif typ == "tool.call_output":
                 yield {"type": "tool_call_output", "output": get_field(event, "output")}
@@ -1347,7 +1810,9 @@ class ModelResult:
         yield {"type": "message.complete", "response": await self.get_response()}
 
     async def requires_approval(self) -> bool:
-        await self.get_response()
+        # Inspection APIs keep working on a paused conversation, so they wait
+        # for the run without going through get_response()'s pause error.
+        await self._ensure_task()
         state = self._state
         return bool(
             state
@@ -1358,12 +1823,35 @@ class ModelResult:
         )
 
     async def get_pending_tool_calls(self) -> List[ParsedToolCall]:
-        await self.get_response()
+        await self._ensure_task()
         return list(self._state.pending_tool_calls or []) if self._state else []
 
     async def get_state(self) -> Any:
-        await self.get_response()
+        await self._ensure_task()
         return self._state
+
+    async def get_usage(self) -> Dict[str, Any]:
+        """Aggregate token/cost usage across every model call this run made.
+
+        `get_response()` resolves to the *final* round's response, so in a
+        multi-round tool loop its `usage` block covers only that generation.
+        This sums the initial request, each tool-round follow-up, the
+        empty-final retry, the `allow_final_response` final turn, and
+        approval-resume requests. Same shape as the `SessionEnd` hook's
+        `total_usage`: `model_calls`, `input_tokens`, `output_tokens`,
+        `total_tokens`, `cached_tokens`, `reasoning_tokens`, and `cost` only
+        when the server reported it.
+
+        Waits for the run to finish, but never raises: a failed or paused run
+        still consumed tokens, so it returns the totals accrued so far (and
+        warns with the swallowed cause). Await `get_response()` to observe the
+        failure itself.
+        """
+        try:
+            await self._ensure_task()
+        except Exception as error:  # noqa: BLE001 - documented never-raises accessor
+            warnings.warn(f"[get_usage] run failed; reporting totals accrued so far: {error}", stacklevel=2)
+        return self._snapshot_session_usage()
 
     def cancel(self) -> None:
         if self._run_task is not None:

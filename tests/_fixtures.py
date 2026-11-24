@@ -25,7 +25,7 @@ validates, so the *field set* still breaks loudly if the SDK changes.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from openrouter_agent.tool_types import ConversationState
 
@@ -121,6 +121,18 @@ def usage_block(**overrides: Any) -> Dict[str, Any]:
     base = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150, "cost": 0.002}
     base.update(overrides)
     return base
+
+
+def recording(log: List[Any], result: Any, pick: Optional[Callable[[Any], Any]] = None) -> Callable[[Any, Any], Any]:
+    """An `execute` (or hook handler) that records each call's first argument --
+    or `pick(arg)` -- into `log` and returns `result`. Lets a test assert an
+    exact call count/sequence without a hand-written closure per tool."""
+
+    def run(params: Any, _context: Any) -> Any:
+        log.append(pick(params) if pick is not None else params)
+        return result
+
+    return run
 
 
 class QueuedResponses:

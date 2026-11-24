@@ -77,7 +77,8 @@ async def test_generator_tool_uses_final_yield_as_output() -> None:
     assert prelim == [("call_2", {"progress": 0.5})]
     assert result is not None
     assert result["result"].doubled == 8
-    assert result["preliminary_results"] == [{"progress": 0.5}]
+    # Upstream 1.0.0 stopped accumulating yields onto the result.
+    assert "preliminary_results" not in result
 
 
 async def test_generator_tool_with_dict_event_schema_keeps_earlier_output_shaped_yields_preliminary() -> None:
@@ -101,7 +102,7 @@ async def test_generator_tool_with_dict_event_schema_keeps_earlier_output_shaped
     assert "error" not in result
     assert result["result"].data == "final"
     assert prelim == [("call_4", {"phase": "progress", "data": "progress-only"})]
-    assert result["preliminary_results"] == [{"phase": "progress", "data": "progress-only"}]
+    assert "preliminary_results" not in result
 
 
 async def test_generator_tool_with_overlapping_dict_schemas_keeps_last_yield_as_output() -> None:

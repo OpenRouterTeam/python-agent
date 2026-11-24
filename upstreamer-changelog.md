@@ -1,5 +1,55 @@
 # openrouter-agent-sdk Changelog
 
+## Unreleased — partial backport of later `@openrouter/agent` fixes
+
+Not released. The package version stays `0.8.2`. This adds selected fixes and small features from upstream `@openrouter/agent` 0.9.0–1.3.0 on top of the 0.8.0 port. Upstream's larger 0.9.0+ features are **not** included yet: async/background/deferred tools, the `task` tool, steering and subagent tools, doom-loop detection, run-level cancellation and tool timeouts, tool sets, stream replay compaction, and the MCP integration.
+
+### Approval and resume
+
+- **Behavior change:** `approve_tool_calls` / `reject_tool_calls` drop duplicate IDs, so an approved call runs only once. An ID that appears in both lists raises `ValueError` before anything runs.
+- **Behavior change:** resuming an `awaiting_approval` conversation without decisions now leaves it paused. Previously it sent a new model request. No request is sent and the supplied `input` is not saved. The same applies when decisions cover only some of the pending calls: the undecided calls stay pending. `awaiting_hitl` still resumes when `input` carries a `function_call_output` for a pending call.
+- While a conversation stays paused, `get_response()`, `get_text()`, `get_tool_calls()` and the stream getters raise an error that names the pause and lists up to 10 pending call IDs. `requires_approval()`, `get_pending_tool_calls()` and `get_state()` still work.
+- **Behavior change:** an approved HITL call whose `on_tool_called` returns `None` again stays pending, with status `awaiting_hitl`. Previously it was dropped.
+- **Behavior change:** approving a call that no longer has an executable tool now records a "Tool not found or not executable" error output. Previously the call was dropped.
+- When a `PreToolUse` hook rewrites an approved call's arguments on resume:
+  - Input-dependent approval checks run again on the new arguments. These are a callable `require_approval`, either on the tool or on the request. A plain `require_approval=True` does not ask again.
+  - Rewritten arguments that fail `input_schema` are blocked and reported through `PostToolUseFailure`.
+- **Behavior change:** the rejection message is now `"Rejected by user"`, matching upstream.
+- With `allow_final_response=False` and a `stop_when` already met on the first response, pausing for an approval-gated call no longer runs that call's auto-approved siblings. They are saved as skipped results.
+
+### Tool loop
+
+- A response cut off at `max_output_tokens` no longer runs any of its tool calls, including the ones that completed before the cut-off. The run ends with that `incomplete` response.
+- **Behavior change:** a forced `tool_choice` is relaxed to `"auto"` once it has produced a tool call. This covers `"required"`, a specific tool, or `allowed_tools` with `mode: "required"`. The relaxed state survives approval and client-tool resumes: it is stored in the new `ConversationState.consumed_forced_tool_choice_key` field, which is additive within state version 1. It resets when the run completes.
+- `next_turn_params` can now set `tool_choice`, and its context always includes the current `tool_choice`.
+- **Behavior change:** `next_turn_params` now runs only for calls whose tool ran and returned without error, and receives the input the tool actually ran on.
+- `to_model_output` now receives the parsed input, the same value `execute` gets. It also runs for results produced during approval resumes and for results saved before an approval pause.
+- Tool execute contexts now always carry `tool_call` as a wire-shaped `function_call` item. Before this, the main loop passed a `ParsedToolCall` there, and the resume and final-turn paths passed nothing.
+- **Behavior change:** generator tools no longer collect `preliminary_results` on the result or the `tool.result` event. Yields are still streamed live as `tool.preliminary_result` events.
+- Final-response validation errors now say what is wrong (empty output array with the response ID, wrong output type, or which required fields are missing). The original message prefixes are unchanged.
+
+### New API
+
+- `ModelResult.get_usage()` returns token and cost totals across every model call in the run. It never raises; a failed or paused run returns what it accrued so far.
+- `call_model(..., active_tools=[...])` sends and runs only the named client tools; server tools are always kept. An empty tool list leaves `tools` out of the request.
+- `tool(..., strict=True | False)` is sent on the wire tool definition. When `strict` is not set, the tool definition now carries `"strict": null`.
+- `tool(..., wire_input_schema={...})` lets a manual tool send its own JSON Schema to the model.
+- `mark_mcp(tool, annotations=..., wire_input_schema=...)` records an MCP server's tool annotations and sends the server's own object schema to the model.
+- `from_chat_messages` now turns assistant `tool_calls` into `function_call` items instead of dropping them.
+
+### Context and hooks
+
+- **Behavior change:** `set_context` / `set_shared_context` now store the schema's parsed value for each field they update. The merged context is validated first, so model-level validators apply. An invalid update raises and leaves the stored context unchanged.
+- Blocking hooks fail closed: a `PreToolUse` or `UserPromptSubmit` chain that is aborted before every handler has run now counts as blocked.
+
+### Compatibility notes
+
+- `call_model` raises `NotImplementedError` for upstream options this port does not support yet (`doom_loop`, `signal`, `tool_timeout_ms`, `tool_concurrency`, `async_tools`, `stream_replay`). Previously they were forwarded to the API.
+- `tool()` raises `ValueError` if `wire_input_schema` is passed to a tool that is not manual. Upstream enforces this only in its type definitions.
+- `get_usage()` reports a failed run with a Python warning (upstream logs to the console). On an approval-resumed run it waits for the whole resumed loop. Upstream counts only the resume request there.
+- Function-valued request parameters (for example a callable `tool_choice`) are still resolved once per run, not per turn. A dynamic forced `tool_choice` therefore does not re-arm between turns as it does upstream.
+- `PreToolUse` still runs before the approval check on a fresh run. Upstream now asks for approval on the model's original arguments and runs `PreToolUse` afterwards.
+
 ## 0.8.2 — stop-condition approval fix
 
 Downstream-only fix on top of the 0.8.0 port; no new upstream work.

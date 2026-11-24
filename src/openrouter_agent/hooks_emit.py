@@ -68,7 +68,14 @@ async def execute_handler_chain(
     behavior = HOOK_BEHAVIOR.get(hook_name)
 
     for index, entry in enumerate(entries):
+        # Checked before each handler so synchronous chains stop promptly.
         if context.cancel_event.is_set():
+            # A hook that can block (PreToolUse, UserPromptSubmit) fails
+            # closed: the handlers left unrun may include the guard that
+            # would have blocked, so an aborted chain must not read as an
+            # approval.
+            if behavior and behavior.block_field:
+                blocked = True
             break
 
         gate = _evaluate_entry_gate(entry, current_payload, index, options)
